@@ -59,8 +59,10 @@ class ProductionTradingAnalyzer:
         # Core parameters (simplified and battle-tested)
         self.coins = [
             'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT',
-            'SOL/USDT', 'DOGE/USDT', 'DOT/USDT', 'MATIC/USDT', 'LINK/USDT',
-            'AVAX/USDT', 'UNI/USDT', 'LTC/USDT', 'ATOM/USDT', 'NEAR/USDT'
+            'SOL/USDT', 'DOGE/USDT', 'BONK/USDT', 'FLOKI/USDT', 'LINK/USDT',
+            'PEPE/USDT', 'UNI/USDT', 'LTC/USDT', 'ATOM/USDT', 'NEAR/USDT',
+            'TIA/USDT', 'ARB/USDT', 'APT/USDT', 'TAO/USDT', 'FET/USDT',
+            'SUI/USDT', 'SEI/USDT', 'OP/USDT', 'LDO/USDT', 'SHIB/USDT',
         ]
         
         # Trading parameters (proven through backtesting)
