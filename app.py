@@ -58,7 +58,7 @@ class TradingBot:
         @self.app.get("/")
         async def dashboard():
             """Serve the main dashboard"""
-            with open("dashboard.html", "r") as f:
+            with open("templates/dashboard.html", "r") as f:
                 return HTMLResponse(content=f.read())
         
         @self.app.websocket("/ws")
