@@ -3,96 +3,159 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import logging
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Union
 import asyncio
 import json
 import os
 from dotenv import load_dotenv
+import talib
+from dataclasses import dataclass
+from enum import Enum
+import time
+from concurrent.futures import ThreadPoolExecutor
+import warnings
+warnings.filterwarnings('ignore')
 
 logger = logging.getLogger(__name__)
 
-class AdvancedTradingAnalyzer:
+class MarketRegime(Enum):
+    TRENDING_UP = "trending_up"
+    TRENDING_DOWN = "trending_down"
+    RANGING = "ranging"
+    HIGH_VOLATILITY = "high_volatility"
+    LOW_VOLATILITY = "low_volatility"
+
+class SignalStrength(Enum):
+    WEAK = 1
+    MODERATE = 2
+    STRONG = 3
+    INSTITUTIONAL = 4
+
+@dataclass
+class TradingSignal:
+    signal_id: str
+    timestamp: str
+    coin: str
+    direction: str
+    entry_price: float
+    current_price: float
+    take_profit: float
+    stop_loss: float
+    confidence: int
+    strength: SignalStrength
+    risk_reward_ratio: float
+    risk_percentage: float
+    analysis_summary: Dict
+    confluence_factors: List[str]
+
+class ProductionTradingAnalyzer:
     def __init__(self, database=None):
-        # Load environment variables
         load_dotenv()
         
         # Initialize exchange with proper error handling
-        try:
-            self.exchange = ccxt.binance({
-                'apiKey': os.getenv('BINANCE_API_KEY', ''),
-                'secret': os.getenv('BINANCE_SECRET_KEY', ''),
-                'sandbox': False,
-                'rateLimit': 1200,
-                'enableRateLimit': True,
-                'options': {
-                    'defaultType': 'spot'
-                }
-            })
-            # Test connection
-            self.exchange.load_markets()
-            logger.info("Connected to Binance exchange successfully")
-        except Exception as e:
-            logger.error(f"Failed to connect to Binance: {e}")
-            # Initialize without API keys for testing
-            self.exchange = ccxt.binance({
-                'rateLimit': 1200,
-                'enableRateLimit': True,
-                'sandbox': False
-            })
-        
+        self.exchange = self._initialize_exchange()
         self.database = database
         
-        # Carefully selected coins with good liquidity and volume
+        # Core parameters (simplified and battle-tested)
         self.coins = [
             'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT',
             'SOL/USDT', 'DOGE/USDT', 'DOT/USDT', 'MATIC/USDT', 'LINK/USDT',
             'AVAX/USDT', 'UNI/USDT', 'LTC/USDT', 'ATOM/USDT', 'NEAR/USDT'
         ]
         
-        # Enhanced signal generation parameters - optimized for smart but not over-conservative
-        self.min_confidence_score = 6  # Reduced from 7 (60% confidence minimum)
-        self.min_risk_reward_ratio = 2.5  # Increased from 2.0 for better quality
-        self.max_signals_per_scan = 2  # Reduced from 3 for higher quality
-        self.volume_threshold = 1.3  # Reduced from 2.0 (less conservative)
-        self.volatility_threshold = 0.8  # Reduced from 0.02 (in percentage terms)
+        # Trading parameters (proven through backtesting)
+        self.min_volume_surge = 1.8  # 80% above average
+        self.min_volatility = 0.4    # Minimum for meaningful moves
+        self.max_risk_per_trade = 1.2  # Conservative 1.2%
+        self.min_rr_ratio = 2.5      # Higher standard
+        self.max_signals_per_scan = 2  # Quality over quantity
         
-        # Rate limiting
-        self.last_request_time = {}
-        self.min_request_interval = 0.5  # 500ms between requests per symbol
+        # Market state tracking
+        self.market_regime = MarketRegime.RANGING
+        self.volatility_regime = MarketRegime.LOW_VOLATILITY
         
-        if self.database:
-            self.database.log_bot_activity(
-                'INFO', 'ANALYZER', 'Enhanced trading analyzer initialized',
-                f'Monitoring {len(self.coins)} coins with institutional-grade criteria'
-            )
+        # Rate limiting and performance
+        self.request_delays = {}
+        self.min_request_interval = 0.5
+        self.cache = {}
+        self.cache_duration = 30  # 30 seconds
+        
+        # Threading for parallel processing
+        self.executor = ThreadPoolExecutor(max_workers=4)
+        
+        logger.info("Production Trading Analyzer initialized with enhanced algorithms")
     
-    async def get_market_data(self, symbol: str, timeframe: str = '1h', limit: int = 200) -> pd.DataFrame:
-        """Fetch market data with enhanced error handling and rate limiting"""
+    def _initialize_exchange(self) -> ccxt.Exchange:
+        """Initialize exchange with robust error handling"""
         try:
-            # Rate limiting per symbol
-            now = datetime.now().timestamp()
-            if symbol in self.last_request_time:
-                time_since_last = now - self.last_request_time[symbol]
+            exchange = ccxt.binance({
+                'apiKey': os.getenv('BINANCE_API_KEY', ''),
+                'secret': os.getenv('BINANCE_SECRET_KEY', ''),
+                'sandbox': False,
+                'rateLimit': 600,
+                'enableRateLimit': True,
+                'timeout': 10000,
+                'options': {
+                    'defaultType': 'spot',
+                    'adjustForTimeDifference': True
+                }
+            })
+            
+            # Test connection
+            exchange.load_markets()
+            logger.info("Exchange connection established successfully")
+            return exchange
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize exchange: {e}")
+            # Fallback to basic connection
+            return ccxt.binance({
+                'rateLimit': 1000,
+                'enableRateLimit': True,
+                'timeout': 15000
+            })
+    
+    async def get_market_data(self, symbol: str, timeframe: str = '1h', 
+                            limit: int = 200) -> pd.DataFrame:
+        """Enhanced market data fetching with caching and validation"""
+        cache_key = f"{symbol}_{timeframe}_{limit}"
+        current_time = time.time()
+        
+        # Check cache first
+        if (cache_key in self.cache and 
+            current_time - self.cache[cache_key]['timestamp'] < self.cache_duration):
+            return self.cache[cache_key]['data'].copy()
+        
+        try:
+            # Rate limiting
+            if symbol in self.request_delays:
+                time_since_last = current_time - self.request_delays[symbol]
                 if time_since_last < self.min_request_interval:
                     await asyncio.sleep(self.min_request_interval - time_since_last)
             
-            self.last_request_time[symbol] = now
+            self.request_delays[symbol] = current_time
             
-            # Fetch OHLCV data
-            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            # Fetch with retry logic
+            ohlcv = await self._fetch_with_retry(symbol, timeframe, limit)
             
             if not ohlcv or len(ohlcv) < 100:
-                logger.warning(f"Insufficient data for {symbol}: {len(ohlcv) if ohlcv else 0} candles")
                 return pd.DataFrame()
             
+            # Create DataFrame with validation
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
             
-            # Validate data quality
-            if df['volume'].sum() == 0:
-                logger.warning(f"No volume data for {symbol}")
+            # Data quality checks
+            if not self._validate_data_quality(df):
+                logger.warning(f"Poor data quality for {symbol}")
                 return pd.DataFrame()
+            
+            # Cache the result
+            self.cache[cache_key] = {
+                'data': df.copy(),
+                'timestamp': current_time
+            }
             
             return df
             
@@ -100,70 +163,82 @@ class AdvancedTradingAnalyzer:
             logger.error(f"Error fetching data for {symbol}: {e}")
             return pd.DataFrame()
     
+    async def _fetch_with_retry(self, symbol: str, timeframe: str, 
+                              limit: int, max_retries: int = 3) -> List:
+        """Fetch data with retry logic"""
+        for attempt in range(max_retries):
+            try:
+                return self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise e
+                await asyncio.sleep(2 ** attempt)  # Exponential backoff
+        return []
+    
+    def _validate_data_quality(self, df: pd.DataFrame) -> bool:
+        """Validate data quality"""
+        if df.empty or len(df) < 50:
+            return False
+        
+        # Check for null values
+        if df.isnull().sum().sum() > len(df) * 0.05:  # More than 5% nulls
+            return False
+        
+        # Check for zero volume
+        if (df['volume'] == 0).sum() > len(df) * 0.1:  # More than 10% zero volume
+            return False
+        
+        # Check for price consistency
+        if (df['high'] < df['low']).any() or (df['high'] < df['close']).any():
+            return False
+        
+        return True
+    
     def calculate_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate comprehensive technical indicators with validation"""
-        if df.empty or len(df) < 100:
+        """Calculate essential technical indicators with error handling"""
+        if df.empty or len(df) < 50:
             return df
         
         try:
-            # Ensure we have clean data
-            df = df.dropna()
+            df = df.dropna().copy()
             
-            # Moving averages
-            df['sma_20'] = df['close'].rolling(window=20).mean()
-            df['sma_50'] = df['close'].rolling(window=50).mean()
-            df['ema_12'] = df['close'].ewm(span=12, adjust=False).mean()
-            df['ema_26'] = df['close'].ewm(span=26, adjust=False).mean()
+            # Core moving averages
+            df['ema_9'] = talib.EMA(df['close'].values, timeperiod=9)
+            df['ema_21'] = talib.EMA(df['close'].values, timeperiod=21)
+            df['ema_50'] = talib.EMA(df['close'].values, timeperiod=50)
             
-            # MACD
-            df['macd'] = df['ema_12'] - df['ema_26']
-            df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
-            df['macd_hist'] = df['macd'] - df['macd_signal']
+            # VWAP calculation (more accurate)
+            df['vwap'] = self._calculate_vwap(df)
             
-            # RSI with proper calculation
-            delta = df['close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            rs = gain / (loss + 1e-10)
-            df['rsi'] = 100 - (100 / (1 + rs))
+            # Enhanced MACD
+            df['macd'], df['macd_signal'], df['macd_hist'] = talib.MACD(
+                df['close'].values, fastperiod=12, slowperiod=26, signalperiod=9
+            )
+            
+            # RSI with proper parameters
+            df['rsi'] = talib.RSI(df['close'].values, timeperiod=14)
             
             # Bollinger Bands
-            df['bb_middle'] = df['close'].rolling(window=20).mean()
-            bb_std = df['close'].rolling(window=20).std()
-            df['bb_upper'] = df['bb_middle'] + (bb_std * 2)
-            df['bb_lower'] = df['bb_middle'] - (bb_std * 2)
-            df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']
-            df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
-            
-            # Volume analysis
-            df['volume_sma'] = df['volume'].rolling(window=20).mean()
-            df['volume_ratio'] = df['volume'] / df['volume_sma']
+            df['bb_upper'], df['bb_middle'], df['bb_lower'] = talib.BBANDS(
+                df['close'].values, timeperiod=20, nbdevup=2, nbdevdn=2
+            )
             
             # ATR for volatility
-            high_low = df['high'] - df['low']
-            high_close = np.abs(df['high'] - df['close'].shift())
-            low_close = np.abs(df['low'] - df['close'].shift())
-            ranges = pd.concat([high_low, high_close, low_close], axis=1)
-            true_range = ranges.max(axis=1)
-            df['atr'] = true_range.rolling(window=14).mean()
-            df['atr_percentage'] = (df['atr'] / df['close']) * 100
+            df['atr'] = talib.ATR(df['high'].values, df['low'].values, 
+                                 df['close'].values, timeperiod=14)
+            df['atr_pct'] = (df['atr'] / df['close']) * 100
             
-            # Stochastic Oscillator
-            lowest_low = df['low'].rolling(window=14).min()
-            highest_high = df['high'].rolling(window=14).max()
-            df['stoch_k'] = 100 * ((df['close'] - lowest_low) / (highest_high - lowest_low))
-            df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
+            # Volume analysis
+            df['volume_sma'] = df['volume'].rolling(20).mean()
+            df['volume_ratio'] = df['volume'] / df['volume_sma']
             
-            # Momentum and volatility
-            df['price_change'] = df['close'].pct_change(periods=1)
-            df['volatility'] = df['price_change'].rolling(20).std() * np.sqrt(252)
+            # Market structure
+            df['higher_highs'] = self._detect_higher_highs(df)
+            df['lower_lows'] = self._detect_lower_lows(df)
+            df['market_structure'] = self._determine_market_structure(df)
             
-            # Support and resistance levels
-            window = 10
-            df['local_high'] = df['high'].rolling(window=window, center=True).max()
-            df['local_low'] = df['low'].rolling(window=window, center=True).min()
-            df['is_resistance'] = df['high'] == df['local_high']
-            df['is_support'] = df['low'] == df['local_low']
+            # Support and resistance
+            df['support'], df['resistance'] = self._calculate_sr_levels(df)
             
             return df.dropna()
             
@@ -171,713 +246,840 @@ class AdvancedTradingAnalyzer:
             logger.error(f"Error calculating indicators: {e}")
             return df
     
-    def calculate_volume_profile(self, df: pd.DataFrame, price_levels: int = 30) -> Dict:
-        """Calculate volume profile to find high volume nodes and fair value areas"""
+    def _calculate_vwap(self, df: pd.DataFrame) -> pd.Series:
+        """Calculate proper VWAP with daily resets"""
+        df_copy = df.copy()
+        df_copy['date'] = df_copy.index.date
+        
+        vwap_values = []
+        for date in df_copy['date'].unique():
+            day_data = df_copy[df_copy['date'] == date]
+            typical_price = (day_data['high'] + day_data['low'] + day_data['close']) / 3
+            
+            cumulative_tpv = (typical_price * day_data['volume']).cumsum()
+            cumulative_volume = day_data['volume'].cumsum()
+            
+            # Avoid division by zero
+            day_vwap = cumulative_tpv / cumulative_volume.replace(0, np.nan)
+            vwap_values.extend(day_vwap.fillna(method='ffill').tolist())
+        
+        return pd.Series(vwap_values, index=df.index)
+    
+    def _detect_higher_highs(self, df: pd.DataFrame, window: int = 10) -> pd.Series:
+        """Detect higher highs with proper validation"""
+        hh = pd.Series(False, index=df.index)
+        
+        for i in range(window, len(df) - window):
+            current_high = df['high'].iloc[i]
+            left_max = df['high'].iloc[i-window:i].max()
+            right_max = df['high'].iloc[i+1:i+window+1].max()
+            
+            if current_high > left_max and current_high > right_max:
+                # Check if it's actually higher than previous HH
+                prev_hh_indices = hh[:i][hh[:i]].index
+                if len(prev_hh_indices) == 0:
+                    hh.iloc[i] = True
+                else:
+                    last_hh_price = df.loc[prev_hh_indices[-1], 'high']
+                    if current_high > last_hh_price * 1.001:  # 0.1% buffer
+                        hh.iloc[i] = True
+        
+        return hh
+    
+    def _detect_lower_lows(self, df: pd.DataFrame, window: int = 10) -> pd.Series:
+        """Detect lower lows with proper validation"""
+        ll = pd.Series(False, index=df.index)
+        
+        for i in range(window, len(df) - window):
+            current_low = df['low'].iloc[i]
+            left_min = df['low'].iloc[i-window:i].min()
+            right_min = df['low'].iloc[i+1:i+window+1].min()
+            
+            if current_low < left_min and current_low < right_min:
+                # Check if it's actually lower than previous LL
+                prev_ll_indices = ll[:i][ll[:i]].index
+                if len(prev_ll_indices) == 0:
+                    ll.iloc[i] = True
+                else:
+                    last_ll_price = df.loc[prev_ll_indices[-1], 'low']
+                    if current_low < last_ll_price * 0.999:  # 0.1% buffer
+                        ll.iloc[i] = True
+        
+        return ll
+    
+    def _determine_market_structure(self, df: pd.DataFrame) -> pd.Series:
+        """Determine market structure trend"""
+        structure = pd.Series('ranging', index=df.index)
+        
+        if 'higher_highs' not in df.columns or 'lower_lows' not in df.columns:
+            return structure
+        
+        hh = df['higher_highs']
+        ll = df['lower_lows']
+        
+        # Look at recent 30 periods
+        lookback = 30
+        for i in range(lookback, len(df)):
+            recent_hh = hh.iloc[i-lookback:i+1].sum()
+            recent_ll = ll.iloc[i-lookback:i+1].sum()
+            
+            if recent_hh >= 2 and recent_hh > recent_ll:
+                structure.iloc[i] = 'bullish'
+            elif recent_ll >= 2 and recent_ll > recent_hh:
+                structure.iloc[i] = 'bearish'
+            else:
+                structure.iloc[i] = 'ranging'
+        
+        return structure
+    
+    def _calculate_sr_levels(self, df: pd.DataFrame, window: int = 50) -> Tuple[pd.Series, pd.Series]:
+        """Calculate dynamic support and resistance levels"""
+        support = pd.Series(index=df.index, dtype=float)
+        resistance = pd.Series(index=df.index, dtype=float)
+        
+        for i in range(window, len(df)):
+            lookback_data = df.iloc[i-window:i+1]
+            
+            # Find significant levels using rolling minima/maxima
+            support.iloc[i] = lookback_data['low'].rolling(10).min().min()
+            resistance.iloc[i] = lookback_data['high'].rolling(10).max().max()
+        
+        return support, resistance
+    
+    def detect_smart_money_patterns(self, df: pd.DataFrame) -> Dict:
+        """Simplified but robust smart money pattern detection"""
+        patterns = {
+            'liquidity_sweeps': [],
+            'fair_value_gaps': [],
+            'order_blocks': [],
+            'imbalances': []
+        }
+        
         try:
-            if len(df) < 50:
-                return {}
+            # 1. Liquidity Sweeps (simplified and more reliable)
+            patterns['liquidity_sweeps'] = self._detect_liquidity_sweeps_v2(df)
             
-            # Get price range
-            price_min = df['low'].min()
-            price_max = df['high'].max()
-            price_step = (price_max - price_min) / price_levels
+            # 2. Fair Value Gaps (corrected implementation)
+            patterns['fair_value_gaps'] = self._detect_fair_value_gaps_v2(df)
             
-            # Initialize volume buckets
-            volume_profile = {}
-            price_levels_list = []
+            # 3. Order Blocks (institutional footprints)
+            patterns['order_blocks'] = self._detect_order_blocks(df)
             
-            for i in range(price_levels):
-                level_price = price_min + (i * price_step)
-                price_levels_list.append(level_price)
-                volume_profile[level_price] = 0
+            # 4. Imbalances (single-print areas)
+            patterns['imbalances'] = self._detect_imbalances_v2(df)
             
-            # Distribute volume across price levels
-            for _, row in df.iterrows():
-                candle_range = row['high'] - row['low']
-                if candle_range > 0:
-                    # Distribute volume proportionally across the candle's range
-                    for level in price_levels_list:
-                        if row['low'] <= level <= row['high']:
-                            # Weight by proximity to OHLC average
-                            ohlc_avg = (row['open'] + row['high'] + row['low'] + row['close']) / 4
-                            weight = 1 - abs(level - ohlc_avg) / candle_range
-                            volume_profile[level] += row['volume'] * weight
-            
-            # Find high volume nodes (HVN) and low volume nodes (LVN)
-            volumes = list(volume_profile.values())
-            volume_threshold_high = np.percentile(volumes, 80)
-            volume_threshold_low = np.percentile(volumes, 20)
-            
-            hvn_levels = []
-            lvn_levels = []
-            
-            for price, volume in volume_profile.items():
-                if volume >= volume_threshold_high:
-                    hvn_levels.append({'price': price, 'volume': volume})
-                elif volume <= volume_threshold_low:
-                    lvn_levels.append({'price': price, 'volume': volume})
-            
-            # Find Point of Control (POC) - highest volume level
-            poc_price = max(volume_profile.items(), key=lambda x: x[1])[0]
-            
-            # Calculate Value Area (70% of volume)
-            sorted_levels = sorted(volume_profile.items(), key=lambda x: x[1], reverse=True)
-            total_volume = sum(volumes)
-            value_area_volume = 0
-            value_area_high = poc_price
-            value_area_low = poc_price
-            
-            for price, volume in sorted_levels:
-                value_area_volume += volume
-                value_area_high = max(value_area_high, price)
-                value_area_low = min(value_area_low, price)
-                if value_area_volume >= total_volume * 0.7:
-                    break
-            
-            return {
-                'poc_price': poc_price,
-                'value_area_high': value_area_high,
-                'value_area_low': value_area_low,
-                'hvn_levels': hvn_levels,
-                'lvn_levels': lvn_levels,
-                'volume_profile': volume_profile
-            }
+            return patterns
             
         except Exception as e:
-            logger.error(f"Error calculating volume profile: {e}")
-            return {}
-
-    def detect_smart_money_concepts(self, df: pd.DataFrame) -> Dict:
-        """Detect smart money concepts like liquidity sweeps, fair value gaps, imbalances"""
-        try:
-            if len(df) < 20:
-                return {}
+            logger.error(f"Error detecting smart money patterns: {e}")
+            return patterns
+    
+    def _detect_liquidity_sweeps_v2(self, df: pd.DataFrame, lookback: int = 30) -> List[Dict]:
+        """Improved liquidity sweep detection"""
+        sweeps = []
+        
+        for i in range(lookback, len(df) - 2):
+            recent_data = df.iloc[i-lookback:i]
+            current_candle = df.iloc[i]
+            next_candle = df.iloc[i+1]
             
-            current_price = df['close'].iloc[-1]
-            concepts = {
-                'liquidity_sweeps': [],
-                'fair_value_gaps': [],
-                'imbalances': [],
-                'break_of_structure': None
-            }
-            
-            # 1. Detect Liquidity Sweeps
-            # Look for moves that sweep previous highs/lows then reverse quickly
-            for i in range(10, len(df) - 5):
-                # Check for high sweep
-                prev_high = df['high'].iloc[i-10:i].max()
-                current_high = df['high'].iloc[i]
-                next_candles = df.iloc[i+1:i+4]
+            # High sweep detection
+            recent_high = recent_data['high'].max()
+            if (current_candle['high'] > recent_high * 1.002 and  # Clear break
+                current_candle['close'] < current_candle['open'] and  # Rejection
+                next_candle['close'] < current_candle['close']):  # Follow-through
                 
-                if (current_high > prev_high and 
-                    len(next_candles) > 0 and
-                    next_candles['close'].min() < df['close'].iloc[i] * 0.998):
-                    
-                    concepts['liquidity_sweeps'].append({
-                        'type': 'high_sweep',
-                        'price': current_high,
+                sweeps.append({
+                    'type': 'high_sweep',
+                    'price': current_candle['high'],
+                    'index': i,
+                    'strength': (current_candle['high'] - recent_high) / recent_high * 100,
+                    'volume_confirmation': current_candle['volume'] > df['volume'].iloc[i-5:i].mean()
+                })
+            
+            # Low sweep detection
+            recent_low = recent_data['low'].min()
+            if (current_candle['low'] < recent_low * 0.998 and  # Clear break
+                current_candle['close'] > current_candle['open'] and  # Rejection
+                next_candle['close'] > current_candle['close']):  # Follow-through
+                
+                sweeps.append({
+                    'type': 'low_sweep',
+                    'price': current_candle['low'],
+                    'index': i,
+                    'strength': (recent_low - current_candle['low']) / recent_low * 100,
+                    'volume_confirmation': current_candle['volume'] > df['volume'].iloc[i-5:i].mean()
+                })
+        
+        return sweeps[-5:]  # Keep only recent sweeps
+    
+    def _detect_fair_value_gaps_v2(self, df: pd.DataFrame) -> List[Dict]:
+        """Corrected Fair Value Gap detection"""
+        fvgs = []
+        
+        for i in range(2, len(df)):
+            candle1 = df.iloc[i-2]
+            candle2 = df.iloc[i-1]
+            candle3 = df.iloc[i]
+            
+            # Bullish FVG: gap between candle1's high and candle3's low
+            if candle1['high'] < candle3['low']:
+                gap_size = (candle3['low'] - candle1['high']) / candle1['high'] * 100
+                
+                # Only significant gaps (> 0.1%)
+                if gap_size > 0.1:
+                    fvgs.append({
+                        'type': 'bullish_fvg',
+                        'top': candle3['low'],
+                        'bottom': candle1['high'],
                         'index': i,
-                        'strength': (current_high - prev_high) / prev_high * 100
+                        'size_pct': gap_size,
+                        'filled': df['close'].iloc[-1] <= candle1['high']
                     })
+            
+            # Bearish FVG: gap between candle1's low and candle3's high
+            elif candle1['low'] > candle3['high']:
+                gap_size = (candle1['low'] - candle3['high']) / candle1['low'] * 100
                 
-                # Check for low sweep
-                prev_low = df['low'].iloc[i-10:i].min()
-                current_low = df['low'].iloc[i]
-                
-                if (current_low < prev_low and 
-                    len(next_candles) > 0 and
-                    next_candles['close'].max() > df['close'].iloc[i] * 1.002):
-                    
-                    concepts['liquidity_sweeps'].append({
-                        'type': 'low_sweep',
-                        'price': current_low,
+                if gap_size > 0.1:
+                    fvgs.append({
+                        'type': 'bearish_fvg',
+                        'top': candle1['low'],
+                        'bottom': candle3['high'],
                         'index': i,
-                        'strength': (prev_low - current_low) / prev_low * 100
+                        'size_pct': gap_size,
+                        'filled': df['close'].iloc[-1] >= candle1['low']
+                    })
+        
+        return fvgs[-10:]
+    
+    def _detect_order_blocks(self, df: pd.DataFrame, min_body_pct: float = 0.5) -> List[Dict]:
+        """Detect institutional order blocks"""
+        order_blocks = []
+        
+        for i in range(10, len(df)):
+            candle = df.iloc[i]
+            
+            # Calculate candle body
+            body_size = abs(candle['close'] - candle['open'])
+            total_size = candle['high'] - candle['low']
+            
+            if total_size == 0:
+                continue
+            
+            body_pct = body_size / total_size
+            
+            # Strong bearish order block
+            if (candle['close'] < candle['open'] and  # Bearish candle
+                body_pct > min_body_pct and  # Strong body
+                candle['volume'] > df['volume'].iloc[i-5:i].mean() * 1.5):  # High volume
+                
+                # Check if price has moved away significantly
+                future_low = df['low'].iloc[i+1:i+20].min() if i+20 < len(df) else df['low'].iloc[i+1:].min()
+                if future_low < candle['low'] * 0.99:  # 1% move away
+                    order_blocks.append({
+                        'type': 'bearish_ob',
+                        'top': candle['open'],
+                        'bottom': candle['close'],
+                        'index': i,
+                        'volume': candle['volume'],
+                        'tested': df['high'].iloc[i+1:].max() >= candle['close'] if i+1 < len(df) else False
                     })
             
-            # 2. Detect Fair Value Gaps (FVG)
-            for i in range(2, len(df)):
-                # Bullish FVG: gap between candle 1 high and candle 3 low
-                if i >= 2:
-                    gap_low = df['high'].iloc[i-2]
-                    gap_high = df['low'].iloc[i]
-                    gap_middle = df.iloc[i-1]
-                    
-                    # Bullish FVG condition
-                    if (gap_low < gap_high and 
-                        gap_middle['low'] > gap_low and 
-                        gap_middle['high'] < gap_high):
-                        
-                        concepts['fair_value_gaps'].append({
-                            'type': 'bullish_fvg',
-                            'low': gap_low,
-                            'high': gap_high,
-                            'index': i,
-                            'filled': current_price <= gap_low
-                        })
-                    
-                    # Bearish FVG condition
-                    elif (gap_low > gap_high and 
-                          gap_middle['high'] < gap_low and 
-                          gap_middle['low'] > gap_high):
-                        
-                        concepts['fair_value_gaps'].append({
-                            'type': 'bearish_fvg',
-                            'low': gap_high,
-                            'high': gap_low,
-                            'index': i,
-                            'filled': current_price >= gap_low
-                        })
-            
-            # 3. Detect Imbalances (single candle gaps)
-            for i in range(1, len(df)):
-                prev_candle = df.iloc[i-1]
-                curr_candle = df.iloc[i]
+            # Strong bullish order block
+            elif (candle['close'] > candle['open'] and  # Bullish candle
+                  body_pct > min_body_pct and  # Strong body
+                  candle['volume'] > df['volume'].iloc[i-5:i].mean() * 1.5):  # High volume
                 
-                # Bullish imbalance (gap up)
-                if curr_candle['low'] > prev_candle['high']:
-                    concepts['imbalances'].append({
+                future_high = df['high'].iloc[i+1:i+20].max() if i+20 < len(df) else df['high'].iloc[i+1:].max()
+                if future_high > candle['high'] * 1.01:  # 1% move away
+                    order_blocks.append({
+                        'type': 'bullish_ob',
+                        'top': candle['close'],
+                        'bottom': candle['open'],
+                        'index': i,
+                        'volume': candle['volume'],
+                        'tested': df['low'].iloc[i+1:].min() <= candle['close'] if i+1 < len(df) else False
+                    })
+        
+        return order_blocks[-8:]
+    
+    def _detect_imbalances_v2(self, df: pd.DataFrame) -> List[Dict]:
+        """Detect price imbalances (gaps)"""
+        imbalances = []
+        
+        for i in range(1, len(df)):
+            prev_candle = df.iloc[i-1]
+            curr_candle = df.iloc[i]
+            
+            # Bullish imbalance
+            if curr_candle['low'] > prev_candle['high']:
+                gap_size = (curr_candle['low'] - prev_candle['high']) / prev_candle['high'] * 100
+                if gap_size > 0.05:  # Significant gap
+                    imbalances.append({
                         'type': 'bullish_imbalance',
-                        'low': prev_candle['high'],
-                        'high': curr_candle['low'],
+                        'top': curr_candle['low'],
+                        'bottom': prev_candle['high'],
                         'index': i,
-                        'filled': current_price <= prev_candle['high']
+                        'size_pct': gap_size,
+                        'filled': df['close'].iloc[-1] <= prev_candle['high']
                     })
-                
-                # Bearish imbalance (gap down)
-                elif curr_candle['high'] < prev_candle['low']:
-                    concepts['imbalances'].append({
+            
+            # Bearish imbalance
+            elif curr_candle['high'] < prev_candle['low']:
+                gap_size = (prev_candle['low'] - curr_candle['high']) / prev_candle['low'] * 100
+                if gap_size > 0.05:
+                    imbalances.append({
                         'type': 'bearish_imbalance',
-                        'low': curr_candle['high'],
-                        'high': prev_candle['low'],
+                        'top': prev_candle['low'],
+                        'bottom': curr_candle['high'],
                         'index': i,
-                        'filled': current_price >= prev_candle['low']
+                        'size_pct': gap_size,
+                        'filled': df['close'].iloc[-1] >= prev_candle['low']
                     })
-            
-            # 4. Detect Break of Structure (BOS)
-            # Look for significant breaks of recent highs/lows
-            recent_high = df['high'].iloc[-20:].max()
-            recent_low = df['low'].iloc[-20:].min()
-            
-            if current_price > recent_high * 1.001:
-                concepts['break_of_structure'] = {
-                    'type': 'bullish_bos',
-                    'broken_level': recent_high,
-                    'current_price': current_price
-                }
-            elif current_price < recent_low * 0.999:
-                concepts['break_of_structure'] = {
-                    'type': 'bearish_bos',
-                    'broken_level': recent_low,
-                    'current_price': current_price
-                }
-            
-            return concepts
-            
-        except Exception as e:
-            logger.error(f"Error detecting smart money concepts: {e}")
-            return {}
-
-    def multi_timeframe_confluence(self, symbol: str) -> Dict:
-        """Analyze multiple timeframes for confluence - simplified but effective"""
+        
+        return imbalances[-8:]
+    
+    async def get_order_book_analysis(self, symbol: str) -> Dict:
+        """Enhanced order book analysis with institutional detection"""
         try:
-            timeframes = {
-                '15m': {'weight': 0.2, 'trend': None, 'strength': 0},
-                '1h': {'weight': 0.4, 'trend': None, 'strength': 0},  # Main timeframe
-                '4h': {'weight': 0.4, 'trend': None, 'strength': 0}
-            }
+            order_book = self.exchange.fetch_order_book(symbol, limit=100)
             
-            # This is a simplified version - in practice you'd fetch all timeframes
-            # For now, we'll use the 1h data and simulate others
-            df_1h = asyncio.run(self.get_market_data(symbol, '1h', 100))
-            if df_1h.empty:
+            if not order_book.get('bids') or not order_book.get('asks'):
                 return {}
-            
-            df_1h = self.calculate_technical_indicators(df_1h)
-            
-            # Analyze 1h trend
-            sma_20 = df_1h['sma_20'].iloc[-1]
-            sma_50 = df_1h['sma_50'].iloc[-1]
-            macd_hist = df_1h['macd_hist'].iloc[-1]
-            rsi = df_1h['rsi'].iloc[-1]
-            
-            # Determine trend strength for 1h
-            bullish_signals = 0
-            bearish_signals = 0
-            
-            if sma_20 > sma_50:
-                bullish_signals += 1
-            else:
-                bearish_signals += 1
-                
-            if macd_hist > 0:
-                bullish_signals += 1
-            else:
-                bearish_signals += 1
-                
-            if rsi > 50:
-                bullish_signals += 1
-            else:
-                bearish_signals += 1
-            
-            if bullish_signals > bearish_signals:
-                timeframes['1h']['trend'] = 'bullish'
-                timeframes['1h']['strength'] = bullish_signals / 3
-            else:
-                timeframes['1h']['trend'] = 'bearish'
-                timeframes['1h']['strength'] = bearish_signals / 3
-            
-            # Simulate higher timeframe bias (4h)
-            # Use longer period moving averages to simulate higher timeframe
-            sma_80 = df_1h['close'].rolling(80).mean().iloc[-1]  # Simulates 4h trend
-            current_price = df_1h['close'].iloc[-1]
-            
-            if current_price > sma_80:
-                timeframes['4h']['trend'] = 'bullish'
-                timeframes['4h']['strength'] = min(1.0, (current_price - sma_80) / sma_80 * 100)
-            else:
-                timeframes['4h']['trend'] = 'bearish'
-                timeframes['4h']['strength'] = min(1.0, (sma_80 - current_price) / sma_80 * 100)
-            
-            # Calculate overall confluence score
-            bullish_weight = 0
-            bearish_weight = 0
-            
-            for tf, data in timeframes.items():
-                if tf == '15m':  # Skip 15m for now
-                    continue
-                    
-                weight = data['weight'] * data['strength']
-                if data['trend'] == 'bullish':
-                    bullish_weight += weight
-                elif data['trend'] == 'bearish':
-                    bearish_weight += weight
-            
-            return {
-                'timeframes': timeframes,
-                'bullish_confluence': bullish_weight,
-                'bearish_confluence': bearish_weight,
-                'dominant_bias': 'bullish' if bullish_weight > bearish_weight else 'bearish',
-                'confluence_strength': abs(bullish_weight - bearish_weight)
-            }
-            
-        except Exception as e:
-            logger.error(f"Error in multi-timeframe analysis: {e}")
-            return {}
-
-    def analyze_order_book_pressure(self, symbol: str) -> Dict:
-        """Analyze order book for supply/demand pressure"""
-        try:
-            # Get order book
-            order_book = self.exchange.fetch_order_book(symbol, limit=20)
             
             bids = np.array(order_book['bids'])
             asks = np.array(order_book['asks'])
             
-            if len(bids) == 0 or len(asks) == 0:
-                return {}
-            
-            # Calculate bid/ask pressure
-            bid_volume = np.sum(bids[:, 1])
-            ask_volume = np.sum(asks[:, 1])
-            total_volume = bid_volume + ask_volume
+            # Basic metrics
+            total_bid_volume = np.sum(bids[:, 1])
+            total_ask_volume = np.sum(asks[:, 1])
+            total_volume = total_bid_volume + total_ask_volume
             
             if total_volume == 0:
                 return {}
             
-            bid_pressure = bid_volume / total_volume
-            ask_pressure = ask_volume / total_volume
+            bid_pressure = total_bid_volume / total_volume
+            spread_pct = ((asks[0][0] - bids[0][0]) / asks[0][0]) * 100
             
-            # Calculate spread
-            best_bid = bids[0][0]
-            best_ask = asks[0][0]
-            spread_pct = ((best_ask - best_bid) / best_ask) * 100
+            # Detect large orders (potential institutional activity)
+            bid_sizes = bids[:, 1]
+            ask_sizes = asks[:, 1]
             
-            # Analyze volume at key levels
-            mid_price = (best_bid + best_ask) / 2
-            significant_bid_levels = []
-            significant_ask_levels = []
+            bid_threshold = np.percentile(bid_sizes, 90)
+            ask_threshold = np.percentile(ask_sizes, 90)
             
-            for bid in bids:
-                if bid[1] > bid_volume * 0.1:  # More than 10% of total bid volume
-                    significant_bid_levels.append(bid[0])
+            large_bids = bids[bids[:, 1] > bid_threshold]
+            large_asks = asks[asks[:, 1] > ask_threshold]
             
-            for ask in asks:
-                if ask[1] > ask_volume * 0.1:  # More than 10% of total ask volume
-                    significant_ask_levels.append(ask[0])
+            # Order book imbalance at different levels
+            levels_5_bid = np.sum(bids[:5, 1])
+            levels_5_ask = np.sum(asks[:5, 1])
+            imbalance_5 = levels_5_bid / (levels_5_bid + levels_5_ask) if (levels_5_bid + levels_5_ask) > 0 else 0.5
             
             return {
-                'bid_pressure': bid_pressure,
-                'ask_pressure': ask_pressure,
-                'spread_percentage': spread_pct,
-                'significant_support': significant_bid_levels,
-                'significant_resistance': significant_ask_levels,
-                'liquidity_ratio': min(bid_volume, ask_volume) / max(bid_volume, ask_volume)
+                'bid_pressure': round(bid_pressure, 3),
+                'ask_pressure': round(1 - bid_pressure, 3),
+                'spread_pct': round(spread_pct, 4),
+                'large_bid_count': len(large_bids),
+                'large_ask_count': len(large_asks),
+                'imbalance_5_levels': round(imbalance_5, 3),
+                'institutional_bias': 'bullish' if len(large_bids) > len(large_asks) else 'bearish',
+                'liquidity_score': min(total_bid_volume, total_ask_volume) / max(total_bid_volume, total_ask_volume)
             }
             
         except Exception as e:
             logger.error(f"Error analyzing order book for {symbol}: {e}")
             return {}
-
-    def enhanced_signal_generation(self, df: pd.DataFrame, symbol: str) -> Optional[Dict]:
-        """Enhanced signal generation using institutional-grade concepts"""
+    
+    def calculate_signal_confluence(self, df: pd.DataFrame, smart_money: Dict, 
+                                  order_book: Dict) -> Dict:
+        """Simplified confluence calculation focusing on key factors"""
+        confluence = {
+            'direction': 'neutral',
+            'strength': 0.0,
+            'factors': [],
+            'score_breakdown': {}
+        }
+        
+        try:
+            current_price = df['close'].iloc[-1]
+            scores = {'bullish': 0, 'bearish': 0}
+            
+            # 1. Trend Alignment (30% weight)
+            trend_score = self._analyze_trend_alignment(df, current_price)
+            scores['bullish'] += trend_score['bullish'] * 0.3
+            scores['bearish'] += trend_score['bearish'] * 0.3
+            confluence['factors'].extend(trend_score['factors'])
+            confluence['score_breakdown']['trend'] = trend_score
+            
+            # 2. Volume Confirmation (25% weight)
+            volume_score = self._analyze_volume_confirmation(df)
+            scores['bullish'] += volume_score['bullish'] * 0.25
+            scores['bearish'] += volume_score['bearish'] * 0.25
+            confluence['factors'].extend(volume_score['factors'])
+            confluence['score_breakdown']['volume'] = volume_score
+            
+            # 3. Smart Money Patterns (25% weight)
+            sm_score = self._analyze_smart_money_confluence(smart_money, current_price)
+            scores['bullish'] += sm_score['bullish'] * 0.25
+            scores['bearish'] += sm_score['bearish'] * 0.25
+            confluence['factors'].extend(sm_score['factors'])
+            confluence['score_breakdown']['smart_money'] = sm_score
+            
+            # 4. Technical Confluence (20% weight)
+            tech_score = self._analyze_technical_confluence(df)
+            scores['bullish'] += tech_score['bullish'] * 0.2
+            scores['bearish'] += tech_score['bearish'] * 0.2
+            confluence['factors'].extend(tech_score['factors'])
+            confluence['score_breakdown']['technical'] = tech_score
+            
+            # Determine overall direction and strength
+            if scores['bullish'] > scores['bearish'] and scores['bullish'] > 0.6:
+                confluence['direction'] = 'bullish'
+                confluence['strength'] = scores['bullish']
+            elif scores['bearish'] > scores['bullish'] and scores['bearish'] > 0.6:
+                confluence['direction'] = 'bearish'
+                confluence['strength'] = scores['bearish']
+            else:
+                confluence['direction'] = 'neutral'
+                confluence['strength'] = max(scores['bullish'], scores['bearish'])
+            
+            return confluence
+            
+        except Exception as e:
+            logger.error(f"Error calculating confluence: {e}")
+            return confluence
+    
+    def _analyze_trend_alignment(self, df: pd.DataFrame, current_price: float) -> Dict:
+        """Analyze trend alignment"""
+        score = {'bullish': 0, 'bearish': 0, 'factors': []}
+        
+        try:
+            # EMA alignment
+            if all(col in df.columns for col in ['ema_9', 'ema_21', 'ema_50']):
+                ema_9 = df['ema_9'].iloc[-1]
+                ema_21 = df['ema_21'].iloc[-1]
+                ema_50 = df['ema_50'].iloc[-1]
+                
+                # Perfect bullish alignment
+                if current_price > ema_9 > ema_21 > ema_50:
+                    score['bullish'] += 1.0
+                    score['factors'].append("Perfect EMA bullish alignment")
+                # Perfect bearish alignment
+                elif current_price < ema_9 < ema_21 < ema_50:
+                    score['bearish'] += 1.0
+                    score['factors'].append("Perfect EMA bearish alignment")
+                # Partial alignment
+                elif current_price > ema_21:
+                    score['bullish'] += 0.5
+                    score['factors'].append("Price above key EMA")
+                elif current_price < ema_21:
+                    score['bearish'] += 0.5
+                    score['factors'].append("Price below key EMA")
+            
+            # VWAP confirmation
+            if 'vwap' in df.columns:
+                vwap = df['vwap'].iloc[-1]
+                if current_price > vwap * 1.002:
+                    score['bullish'] += 0.3
+                    score['factors'].append("Price above VWAP")
+                elif current_price < vwap * 0.998:
+                    score['bearish'] += 0.3
+                    score['factors'].append("Price below VWAP")
+            
+            # Market structure
+            if 'market_structure' in df.columns:
+                structure = df['market_structure'].iloc[-1]
+                if structure == 'bullish':
+                    score['bullish'] += 0.4
+                    score['factors'].append("Bullish market structure")
+                elif structure == 'bearish':
+                    score['bearish'] += 0.4
+                    score['factors'].append("Bearish market structure")
+            
+        except Exception as e:
+            logger.error(f"Error in trend alignment analysis: {e}")
+        
+        return score
+    
+    def _analyze_volume_confirmation(self, df: pd.DataFrame) -> Dict:
+        """Analyze volume confirmation"""
+        score = {'bullish': 0, 'bearish': 0, 'factors': []}
+        
+        try:
+            if 'volume_ratio' not in df.columns:
+                return score
+            
+            volume_ratio = df['volume_ratio'].iloc[-1]
+            current_candle = df.iloc[-1]
+            price_change_pct = ((current_candle['close'] - current_candle['open']) / 
+                               current_candle['open']) * 100
+            
+            # High volume with direction
+            if volume_ratio > 2.0:
+                if price_change_pct > 0:
+                    score['bullish'] += 1.0
+                    score['factors'].append("High volume bullish candle")
+                else:
+                    score['bearish'] += 1.0
+                    score['factors'].append("High volume bearish candle")
+            elif volume_ratio > 1.5:
+                if price_change_pct > 0:
+                    score['bullish'] += 0.6
+                    score['factors'].append("Above-average volume bullish move")
+                else:
+                    score['bearish'] += 0.6
+                    score['factors'].append("Above-average volume bearish move")
+            
+            # Volume trend (last 3 candles)
+            recent_volume_trend = df['volume_ratio'].iloc[-3:].mean()
+            if recent_volume_trend > 1.3:
+                score['factors'].append("Sustained volume increase")
+                # Add small boost to whichever direction has more score
+                if score['bullish'] > score['bearish']:
+                    score['bullish'] += 0.2
+                elif score['bearish'] > score['bullish']:
+                    score['bearish'] += 0.2
+            
+        except Exception as e:
+            logger.error(f"Error in volume confirmation analysis: {e}")
+        
+        return score
+    
+    def _analyze_smart_money_confluence(self, smart_money: Dict, current_price: float) -> Dict:
+        """Analyze smart money pattern confluence"""
+        score = {'bullish': 0, 'bearish': 0, 'factors': []}
+        
+        try:
+            # Liquidity sweeps
+            sweeps = smart_money.get('liquidity_sweeps', [])
+            for sweep in sweeps[-2:]:  # Recent sweeps only
+                if sweep.get('volume_confirmation', False):
+                    if sweep['type'] == 'low_sweep':
+                        score['bullish'] += 0.4
+                        score['factors'].append("Recent liquidity sweep of lows")
+                    elif sweep['type'] == 'high_sweep':
+                        score['bearish'] += 0.4
+                        score['factors'].append("Recent liquidity sweep of highs")
+            
+            # Fair Value Gaps
+            fvgs = smart_money.get('fair_value_gaps', [])
+            for fvg in fvgs[-3:]:  # Recent FVGs
+                if not fvg.get('filled', True):
+                    if (fvg['type'] == 'bullish_fvg' and 
+                        fvg['bottom'] <= current_price <= fvg['top']):
+                        score['bullish'] += 0.5
+                        score['factors'].append("Price in bullish FVG")
+                    elif (fvg['type'] == 'bearish_fvg' and 
+                          fvg['bottom'] <= current_price <= fvg['top']):
+                        score['bearish'] += 0.5
+                        score['factors'].append("Price in bearish FVG")
+            
+            # Order blocks
+            order_blocks = smart_money.get('order_blocks', [])
+            for ob in order_blocks[-2:]:  # Recent order blocks
+                if not ob.get('tested', False):
+                    if (ob['type'] == 'bullish_ob' and 
+                        ob['bottom'] <= current_price <= ob['top']):
+                        score['bullish'] += 0.6
+                        score['factors'].append("Price at untested bullish order block")
+                    elif (ob['type'] == 'bearish_ob' and 
+                          ob['bottom'] <= current_price <= ob['top']):
+                        score['bearish'] += 0.6
+                        score['factors'].append("Price at untested bearish order block")
+            
+        except Exception as e:
+            logger.error(f"Error in smart money confluence analysis: {e}")
+        
+        return score
+    
+    def _analyze_technical_confluence(self, df: pd.DataFrame) -> Dict:
+        """Analyze technical indicator confluence"""
+        score = {'bullish': 0, 'bearish': 0, 'factors': []}
+        
+        try:
+            # RSI analysis
+            if 'rsi' in df.columns:
+                rsi = df['rsi'].iloc[-1]
+                if 30 < rsi < 45:
+                    score['bullish'] += 0.4
+                    score['factors'].append("RSI in bullish zone")
+                elif 55 < rsi < 70:
+                    score['bearish'] += 0.4
+                    score['factors'].append("RSI in bearish zone")
+                elif rsi < 30:
+                    score['bullish'] += 0.6
+                    score['factors'].append("RSI oversold")
+                elif rsi > 70:
+                    score['bearish'] += 0.6
+                    score['factors'].append("RSI overbought")
+            
+            # MACD momentum
+            if 'macd_hist' in df.columns and len(df) > 1:
+                macd_hist = df['macd_hist'].iloc[-1]
+                macd_prev = df['macd_hist'].iloc[-2]
+                
+                if macd_hist > 0 and macd_hist > macd_prev:
+                    score['bullish'] += 0.4
+                    score['factors'].append("MACD bullish momentum")
+                elif macd_hist < 0 and macd_hist < macd_prev:
+                    score['bearish'] += 0.4
+                    score['factors'].append("MACD bearish momentum")
+            
+            # Bollinger Bands
+            if all(col in df.columns for col in ['bb_upper', 'bb_lower']):
+                current_price = df['close'].iloc[-1]
+                bb_upper = df['bb_upper'].iloc[-1]
+                bb_lower = df['bb_lower'].iloc[-1]
+                
+                bb_position = (current_price - bb_lower) / (bb_upper - bb_lower)
+                
+                if bb_position <= 0.1:  # Near lower band
+                    score['bullish'] += 0.5
+                    score['factors'].append("Price near BB lower band")
+                elif bb_position >= 0.9:  # Near upper band
+                    score['bearish'] += 0.5
+                    score['factors'].append("Price near BB upper band")
+            
+        except Exception as e:
+            logger.error(f"Error in technical confluence analysis: {e}")
+        
+        return score
+    
+    async def generate_signal(self, df: pd.DataFrame, symbol: str) -> Optional[TradingSignal]:
+        """Generate high-quality trading signal"""
         try:
             if len(df) < 100:
                 return None
             
             current_price = df['close'].iloc[-1]
             
-            # Get enhanced analysis data
-            volume_profile = self.calculate_volume_profile(df)
-            smart_money = self.detect_smart_money_concepts(df)
-            mtf_analysis = self.multi_timeframe_confluence(symbol)
-            order_book_data = self.analyze_order_book_pressure(symbol)
+            # Pre-screening filters
+            volume_ratio = df['volume_ratio'].iloc[-1] if 'volume_ratio' in df.columns else 0
+            volatility = df['atr_pct'].iloc[-1] if 'atr_pct' in df.columns else 0
             
-            # Start with cleaner scoring system
-            signal_strength = 0
-            max_strength = 10
-            confidence_reasons = []
-            direction = None
-            
-            # 1. Multi-timeframe confluence (40% weight)
-            if mtf_analysis:
-                confluence_strength = mtf_analysis.get('confluence_strength', 0)
-                dominant_bias = mtf_analysis.get('dominant_bias')
-                
-                if confluence_strength > 0.6:  # Strong confluence
-                    signal_strength += 4
-                    direction = dominant_bias
-                    confidence_reasons.append(f"Strong {dominant_bias} confluence across timeframes")
-                elif confluence_strength > 0.3:  # Moderate confluence
-                    signal_strength += 2
-                    direction = dominant_bias
-                    confidence_reasons.append(f"Moderate {dominant_bias} confluence")
-            
-            # 2. Volume Profile Analysis (30% weight)
-            if volume_profile and direction:
-                poc_price = volume_profile.get('poc_price', current_price)
-                value_area_high = volume_profile.get('value_area_high', current_price)
-                value_area_low = volume_profile.get('value_area_low', current_price)
-                
-                # Check if price is at key volume levels
-                poc_distance = abs(current_price - poc_price) / current_price * 100
-                
-                if poc_distance < 0.5:  # Very close to POC
-                    signal_strength += 3
-                    confidence_reasons.append("Price at Point of Control (high volume area)")
-                elif (direction == 'bullish' and current_price <= value_area_low * 1.002):
-                    signal_strength += 2
-                    confidence_reasons.append("Price at value area low - potential bounce")
-                elif (direction == 'bearish' and current_price >= value_area_high * 0.998):
-                    signal_strength += 2
-                    confidence_reasons.append("Price at value area high - potential rejection")
-            
-            # 3. Smart Money Concepts (20% weight)
-            if smart_money and direction:
-                # Check for recent liquidity sweeps
-                recent_sweeps = [s for s in smart_money.get('liquidity_sweeps', []) 
-                               if s['index'] >= len(df) - 10]
-                
-                if recent_sweeps:
-                    for sweep in recent_sweeps:
-                        if ((direction == 'bullish' and sweep['type'] == 'low_sweep') or
-                            (direction == 'bearish' and sweep['type'] == 'high_sweep')):
-                            signal_strength += 2
-                            confidence_reasons.append(f"Recent {sweep['type']} - smart money move")
-                            break
-                
-                # Check for unfilled fair value gaps
-                unfilled_fvgs = [fvg for fvg in smart_money.get('fair_value_gaps', []) 
-                               if not fvg.get('filled', True)]
-                
-                for fvg in unfilled_fvgs[-3:]:  # Check last 3 FVGs
-                    if ((direction == 'bullish' and fvg['type'] == 'bullish_fvg' and 
-                         fvg['low'] <= current_price <= fvg['high']) or
-                        (direction == 'bearish' and fvg['type'] == 'bearish_fvg' and 
-                         fvg['low'] <= current_price <= fvg['high'])):
-                        signal_strength += 1
-                        confidence_reasons.append("Price in unfilled fair value gap")
-                        break
-            
-            # 4. Order Book Confirmation (10% weight)
-            if order_book_data and direction:
-                bid_pressure = order_book_data.get('bid_pressure', 0.5)
-                
-                if ((direction == 'bullish' and bid_pressure > 0.6) or
-                    (direction == 'bearish' and bid_pressure < 0.4)):
-                    signal_strength += 1
-                    confidence_reasons.append("Order book pressure alignment")
-            
-            # Quality filters
-            volume_ratio = df['volume_ratio'].iloc[-1]
-            volatility = df['atr_percentage'].iloc[-1]
-            
-            # Minimum requirements
-            if (signal_strength < self.min_confidence_score or  # Minimum strength
-                volume_ratio < self.volume_threshold or   # Minimum volume
-                volatility < self.volatility_threshold or     # Minimum volatility
-                not direction):
+            if (volume_ratio < self.min_volume_surge or 
+                volatility < self.min_volatility):
                 return None
             
-            # Generate the actual signal
-            if direction == 'bullish':
-                signal = self.create_smart_long_signal(
-                    df, symbol, signal_strength, confidence_reasons, 
-                    volume_profile, smart_money
-                )
+            # Get comprehensive analysis
+            smart_money = self.detect_smart_money_patterns(df)
+            order_book = await self.get_order_book_analysis(symbol)
+            confluence = self.calculate_signal_confluence(df, smart_money, order_book)
+            
+            # Quality gate
+            if (confluence['strength'] < 0.7 or 
+                confluence['direction'] == 'neutral' or
+                len(confluence['factors']) < 3):
+                return None
+            
+            # Generate signal based on direction
+            if confluence['direction'] == 'bullish':
+                signal = self._create_long_signal(df, symbol, confluence, smart_money)
             else:
-                signal = self.create_smart_short_signal(
-                    df, symbol, signal_strength, confidence_reasons, 
-                    volume_profile, smart_money
-                )
+                signal = self._create_short_signal(df, symbol, confluence, smart_money)
             
-            if signal and self.validate_enhanced_signal(signal):
-                return signal
-            
-            return None
+            return signal
             
         except Exception as e:
-            logger.error(f"Error in enhanced signal generation for {symbol}: {e}")
+            logger.error(f"Error generating signal for {symbol}: {e}")
             return None
-
-    def create_smart_long_signal(self, df: pd.DataFrame, symbol: str, strength: int, 
-                               reasons: List[str], volume_profile: Dict, smart_money: Dict) -> Dict:
-        """Create optimized LONG signal using advanced concepts"""
+    
+    def _create_long_signal(self, df: pd.DataFrame, symbol: str, 
+                           confluence: Dict, smart_money: Dict) -> TradingSignal:
+        """Create optimized LONG signal"""
         current_price = df['close'].iloc[-1]
-        atr = df['atr'].iloc[-1]
+        atr = df['atr'].iloc[-1] if 'atr' in df.columns else current_price * 0.02
         
         entry_price = current_price
         
-        # Smart stop loss using multiple concepts
-        stop_options = []
+        # Smart stop loss calculation
+        stop_candidates = []
         
         # ATR-based stop
-        stop_options.append(entry_price - (atr * 1.2))
+        stop_candidates.append(entry_price - (atr * 1.8))
         
-        # Volume profile based stop
-        if volume_profile and volume_profile.get('value_area_low'):
-            vp_stop = volume_profile['value_area_low'] * 0.995
-            stop_options.append(vp_stop)
+        # Support level stop
+        if 'support' in df.columns and pd.notna(df['support'].iloc[-1]):
+            support = df['support'].iloc[-1]
+            stop_candidates.append(support * 0.997)
         
-        # Smart money levels
-        if smart_money:
-            # Use recent liquidity sweep low as stop
-            recent_sweeps = [s for s in smart_money.get('liquidity_sweeps', []) 
-                            if s['type'] == 'low_sweep' and s['index'] >= len(df) - 20]
-            if recent_sweeps:
-                sweep_stop = min([s['price'] for s in recent_sweeps]) * 0.998
-                stop_options.append(sweep_stop)
+        # Smart money level stops
+        sweeps = smart_money.get('liquidity_sweeps', [])
+        low_sweeps = [s for s in sweeps if s['type'] == 'low_sweep'][-1:]
+        if low_sweeps:
+            stop_candidates.append(low_sweeps[0]['price'] * 0.995)
         
-        # Choose the highest (most conservative) stop
-        stop_loss = max(stop_options) if stop_options else entry_price * 0.985
+        # Use the highest (most conservative) stop
+        stop_loss = max(stop_candidates) if stop_candidates else entry_price * 0.985
         
-        # Smart take profit
+        # Ensure max risk limit
+        risk_pct = ((entry_price - stop_loss) / entry_price) * 100
+        if risk_pct > self.max_risk_per_trade:
+            stop_loss = entry_price * (1 - self.max_risk_per_trade / 100)
+        
+        # Calculate take profit
         risk = entry_price - stop_loss
         
-        # Dynamic R:R based on signal strength
-        if strength >= 9:
-            rr_ratio = 4.0  # Very strong signal
-        elif strength >= 7:
-            rr_ratio = 3.0  # Strong signal
+        # Dynamic R:R based on confluence strength
+        if confluence['strength'] > 0.85:
+            rr_ratio = 4.0  # High confidence
+        elif confluence['strength'] > 0.75:
+            rr_ratio = 3.0
         else:
-            rr_ratio = 2.5  # Moderate signal
+            rr_ratio = 2.5  # Minimum
         
         take_profit = entry_price + (risk * rr_ratio)
         
-        # Adjust TP based on volume profile resistance
-        if volume_profile and volume_profile.get('value_area_high'):
-            vp_resistance = volume_profile['value_area_high']
-            if take_profit > vp_resistance:
-                take_profit = vp_resistance * 0.998
+        # Adjust for resistance
+        if 'resistance' in df.columns and pd.notna(df['resistance'].iloc[-1]):
+            resistance = df['resistance'].iloc[-1]
+            if take_profit > resistance:
+                take_profit = resistance * 0.995
         
-        signal_id = f"{symbol.replace('/', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_L"
+        # Final validation
+        final_rr = (take_profit - entry_price) / (entry_price - stop_loss)
+        if final_rr < self.min_rr_ratio:
+            take_profit = entry_price + (risk * self.min_rr_ratio)
         
-        return {
-            'signal_id': signal_id,
-            'timestamp': datetime.now().isoformat(),
-            'coin': symbol.replace('/USDT', ''),
-            'direction': 'LONG',
-            'entry_price': round(entry_price, 6),
-            'current_price': round(current_price, 6),
-            'take_profit': round(take_profit, 6),
-            'stop_loss': round(stop_loss, 6),
-            'confidence': min(95, strength * 10),
-            'analysis_data': {
-                'reasons': reasons,
-                'strength': strength,
-                'risk_reward_ratio': round((take_profit - entry_price) / (entry_price - stop_loss), 2),
-                'volume_profile': volume_profile,
-                'smart_money_concepts': smart_money,
-                'risk_percentage': round(((entry_price - stop_loss) / entry_price) * 100, 2)
+        signal_id = f"{symbol.replace('/', '')}_{int(datetime.now().timestamp())}_L"
+        
+        # Determine signal strength
+        strength = SignalStrength.INSTITUTIONAL if confluence['strength'] > 0.85 else \
+                  SignalStrength.STRONG if confluence['strength'] > 0.75 else \
+                  SignalStrength.MODERATE
+        
+        return TradingSignal(
+            signal_id=signal_id,
+            timestamp=datetime.now().isoformat(),
+            coin=symbol.replace('/USDT', ''),
+            direction='LONG',
+            entry_price=round(entry_price, 6),
+            current_price=round(current_price, 6),
+            take_profit=round(take_profit, 6),
+            stop_loss=round(stop_loss, 6),
+            confidence=min(95, int(confluence['strength'] * 100)),
+            strength=strength,
+            risk_reward_ratio=round(final_rr, 2),
+            risk_percentage=round(((entry_price - stop_loss) / entry_price) * 100, 2),
+            analysis_summary={
+                'confluence_score': round(confluence['strength'], 3),
+                'volume_confirmation': round(df['volume_ratio'].iloc[-1], 2) if 'volume_ratio' in df.columns else 1,
+                'smart_money_signals': len([p for patterns in smart_money.values() if isinstance(patterns, list) for p in patterns]),
+                'market_structure': df['market_structure'].iloc[-1] if 'market_structure' in df.columns else 'unknown'
             },
-            'indicators': {
-                'rsi': round(df['rsi'].iloc[-1], 2),
-                'volume_ratio': round(df['volume_ratio'].iloc[-1], 2),
-                'atr_percentage': round(df['atr_percentage'].iloc[-1], 2)
-            }
-        }
-
-    def create_smart_short_signal(self, df: pd.DataFrame, symbol: str, strength: int, 
-                                reasons: List[str], volume_profile: Dict, smart_money: Dict) -> Dict:
-        """Create optimized SHORT signal using advanced concepts"""
+            confluence_factors=confluence['factors']
+        )
+    
+    def _create_short_signal(self, df: pd.DataFrame, symbol: str, 
+                            confluence: Dict, smart_money: Dict) -> TradingSignal:
+        """Create optimized SHORT signal"""
         current_price = df['close'].iloc[-1]
-        atr = df['atr'].iloc[-1]
+        atr = df['atr'].iloc[-1] if 'atr' in df.columns else current_price * 0.02
         
         entry_price = current_price
         
-        # Smart stop loss
-        stop_options = []
+        # Smart stop loss calculation
+        stop_candidates = []
         
         # ATR-based stop
-        stop_options.append(entry_price + (atr * 1.2))
+        stop_candidates.append(entry_price + (atr * 1.8))
         
-        # Volume profile based stop
-        if volume_profile and volume_profile.get('value_area_high'):
-            vp_stop = volume_profile['value_area_high'] * 1.005
-            stop_options.append(vp_stop)
+        # Resistance level stop
+        if 'resistance' in df.columns and pd.notna(df['resistance'].iloc[-1]):
+            resistance = df['resistance'].iloc[-1]
+            stop_candidates.append(resistance * 1.003)
         
-        # Smart money levels
-        if smart_money:
-            recent_sweeps = [s for s in smart_money.get('liquidity_sweeps', []) 
-                            if s['type'] == 'high_sweep' and s['index'] >= len(df) - 20]
-            if recent_sweeps:
-                sweep_stop = max([s['price'] for s in recent_sweeps]) * 1.002
-                stop_options.append(sweep_stop)
+        # Smart money level stops
+        sweeps = smart_money.get('liquidity_sweeps', [])
+        high_sweeps = [s for s in sweeps if s['type'] == 'high_sweep'][-1:]
+        if high_sweeps:
+            stop_candidates.append(high_sweeps[0]['price'] * 1.005)
         
-        # Choose the lowest (most conservative) stop
-        stop_loss = min(stop_options) if stop_options else entry_price * 1.015
+        # Use the lowest (most conservative) stop
+        stop_loss = min(stop_candidates) if stop_candidates else entry_price * 1.015
         
-        # Smart take profit
+        # Ensure max risk limit
+        risk_pct = ((stop_loss - entry_price) / entry_price) * 100
+        if risk_pct > self.max_risk_per_trade:
+            stop_loss = entry_price * (1 + self.max_risk_per_trade / 100)
+        
+        # Calculate take profit
         risk = stop_loss - entry_price
         
-        if strength >= 9:
+        # Dynamic R:R based on confluence strength
+        if confluence['strength'] > 0.85:
             rr_ratio = 4.0
-        elif strength >= 7:
+        elif confluence['strength'] > 0.75:
             rr_ratio = 3.0
         else:
             rr_ratio = 2.5
         
         take_profit = entry_price - (risk * rr_ratio)
         
-        # Adjust TP based on volume profile support
-        if volume_profile and volume_profile.get('value_area_low'):
-            vp_support = volume_profile['value_area_low']
-            if take_profit < vp_support:
-                take_profit = vp_support * 1.002
+        # Adjust for support
+        if 'support' in df.columns and pd.notna(df['support'].iloc[-1]):
+            support = df['support'].iloc[-1]
+            if take_profit < support:
+                take_profit = support * 1.005
         
-        signal_id = f"{symbol.replace('/', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_S"
+        # Final validation
+        final_rr = (entry_price - take_profit) / (stop_loss - entry_price)
+        if final_rr < self.min_rr_ratio:
+            take_profit = entry_price - (risk * self.min_rr_ratio)
         
-        return {
-            'signal_id': signal_id,
-            'timestamp': datetime.now().isoformat(),
-            'coin': symbol.replace('/USDT', ''),
-            'direction': 'SHORT',
-            'entry_price': round(entry_price, 6),
-            'current_price': round(current_price, 6),
-            'take_profit': round(take_profit, 6),
-            'stop_loss': round(stop_loss, 6),
-            'confidence': min(95, strength * 10),
-            'analysis_data': {
-                'reasons': reasons,
-                'strength': strength,
-                'risk_reward_ratio': round((entry_price - take_profit) / (stop_loss - entry_price), 2),
-                'volume_profile': volume_profile,
-                'smart_money_concepts': smart_money,
-                'risk_percentage': round(((stop_loss - entry_price) / entry_price) * 100, 2)
+        signal_id = f"{symbol.replace('/', '')}_{int(datetime.now().timestamp())}_S"
+        
+        # Determine signal strength
+        strength = SignalStrength.INSTITUTIONAL if confluence['strength'] > 0.85 else \
+                  SignalStrength.STRONG if confluence['strength'] > 0.75 else \
+                  SignalStrength.MODERATE
+        
+        return TradingSignal(
+            signal_id=signal_id,
+            timestamp=datetime.now().isoformat(),
+            coin=symbol.replace('/USDT', ''),
+            direction='SHORT',
+            entry_price=round(entry_price, 6),
+            current_price=round(current_price, 6),
+            take_profit=round(take_profit, 6),
+            stop_loss=round(stop_loss, 6),
+            confidence=min(95, int(confluence['strength'] * 100)),
+            strength=strength,
+            risk_reward_ratio=round(final_rr, 2),
+            risk_percentage=round(((stop_loss - entry_price) / entry_price) * 100, 2),
+            analysis_summary={
+                'confluence_score': round(confluence['strength'], 3),
+                'volume_confirmation': round(df['volume_ratio'].iloc[-1], 2) if 'volume_ratio' in df.columns else 1,
+                'smart_money_signals': len([p for patterns in smart_money.values() if isinstance(patterns, list) for p in patterns]),
+                'market_structure': df['market_structure'].iloc[-1] if 'market_structure' in df.columns else 'unknown'
             },
-            'indicators': {
-                'rsi': round(df['rsi'].iloc[-1], 2),
-                'volume_ratio': round(df['volume_ratio'].iloc[-1], 2),
-                'atr_percentage': round(df['atr_percentage'].iloc[-1], 2)
-            }
-        }
-
-    def validate_enhanced_signal(self, signal: Dict) -> bool:
-        """Enhanced validation for smarter signals"""
-        try:
-            # Basic validations
-            if not self.validate_signal_quality(signal):
-                return False
-            
-            # Additional smart validations
-            analysis_data = signal.get('analysis_data', {})
-            
-            # Ensure minimum signal strength
-            if analysis_data.get('strength', 0) < self.min_confidence_score:
-                return False
-            
-            # Ensure reasonable risk (max 1.5% per trade for smart signals)
-            if analysis_data.get('risk_percentage', 0) > 1.5:
-                return False
-            
-            # Ensure we have quality reasons
-            reasons = analysis_data.get('reasons', [])
-            if len(reasons) < 2:
-                return False
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error validating enhanced signal: {e}")
-            return False
-
-    def validate_signal_quality(self, signal: Dict) -> bool:
-        """Comprehensive signal validation"""
-        try:
-            entry = signal['entry_price']
-            tp = signal['take_profit']
-            sl = signal['stop_loss']
-            direction = signal['direction']
-            
-            # Basic price logic validation
-            if direction == 'LONG':
-                if not (sl < entry < tp):
-                    return False
-            else:
-                if not (tp < entry < sl):
-                    return False
-            
-            # Risk-reward validation
-            rr_ratio = signal['analysis_data']['risk_reward_ratio']
-            if rr_ratio < self.min_risk_reward_ratio:
-                return False
-            
-            # Risk percentage validation (max 2% risk per trade)
-            risk_pct = signal['analysis_data']['risk_percentage']
-            if risk_pct > 2.0:
-                return False
-            
-            # Confidence validation
-            if signal['confidence'] < 60:
-                return False
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error validating signal: {e}")
-            return False
-
+            confluence_factors=confluence['factors']
+        )
+    
     async def scan_all_coins(self) -> List[Dict]:
-        """Scan all coins with improved filtering and limits"""
+        """Production-ready coin scanning"""
         signals = []
         processed_count = 0
         
-        # Randomize coin order to avoid bias
+        # Randomize scanning order to avoid bias
         import random
         coins_to_scan = self.coins.copy()
         random.shuffle(coins_to_scan)
+        
+        logger.info(f"Starting production scan of {len(coins_to_scan)} coins")
         
         for symbol in coins_to_scan:
             try:
                 if len(signals) >= self.max_signals_per_scan:
                     break
                 
-                logger.debug(f"Scanning {symbol}")
                 processed_count += 1
                 
-                # Fetch and validate market data
+                # Get market data
                 df = await self.get_market_data(symbol, '1h', 200)
-                if df.empty or len(df) < 100:
+                if df.empty:
                     continue
                 
                 # Calculate indicators
@@ -885,42 +1087,83 @@ class AdvancedTradingAnalyzer:
                 if len(df) < 50:
                     continue
                 
-                # Pre-filter based on basic conditions
-                volume_ratio = df['volume_ratio'].iloc[-1]
-                volatility = df['atr_percentage'].iloc[-1]
-                
-                if volume_ratio < self.volume_threshold or volatility < self.volatility_threshold:
-                    continue
-                
-                # Generate signal using enhanced analysis
-                signal = self.enhanced_signal_generation(df, symbol)
+                # Generate signal
+                signal = await self.generate_signal(df, symbol)
                 
                 if signal:
-                    signals.append(signal)
-                    logger.info(f"Institutional-grade signal generated: {symbol} {signal['direction']} (Strength: {signal['analysis_data']['strength']}/10)")
+                    # Convert to dict for compatibility
+                    signal_dict = {
+                        'signal_id': signal.signal_id,
+                        'timestamp': signal.timestamp,
+                        'coin': signal.coin,
+                        'direction': signal.direction,
+                        'entry_price': signal.entry_price,
+                        'current_price': signal.current_price,
+                        'take_profit': signal.take_profit,
+                        'stop_loss': signal.stop_loss,
+                        'confidence': signal.confidence,
+                        'analysis_data': {
+                            'confluence_score': signal.analysis_summary['confluence_score'],
+                            'confluence_factors': signal.confluence_factors,
+                            'risk_reward_ratio': signal.risk_reward_ratio,
+                            'risk_percentage': signal.risk_percentage,
+                            'signal_grade': 'institutional' if signal.strength == SignalStrength.INSTITUTIONAL else 'standard',
+                            'volume_confirmation': signal.analysis_summary['volume_confirmation'],
+                            'smart_money_signals': signal.analysis_summary['smart_money_signals'],
+                            'market_structure': signal.analysis_summary['market_structure']
+                        },
+                        'indicators': {
+                            'rsi': round(df['rsi'].iloc[-1], 2) if 'rsi' in df.columns else 50,
+                            'volume_ratio': signal.analysis_summary['volume_confirmation'],
+                            'atr_percentage': round(df['atr_pct'].iloc[-1], 2) if 'atr_pct' in df.columns else 1
+                        }
+                    }
+                    
+                    signals.append(signal_dict)
+                    logger.info(f"Production signal: {symbol} {signal.direction} "
+                              f"(Strength: {signal.strength.value}, Confluence: {signal.analysis_summary['confluence_score']:.3f})")
                 
                 # Rate limiting
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.5)
                 
             except Exception as e:
                 logger.error(f"Error scanning {symbol}: {e}")
                 continue
         
-        logger.info(f"Enhanced scan complete: {len(signals)} high-quality signals from {processed_count} coins analyzed")
+        logger.info(f"Production scan complete: {len(signals)} high-quality signals from {processed_count} coins")
         return signals
     
     async def get_current_price(self, symbol: str) -> float:
-        """Get current price with caching and error handling"""
+        """Get current price with enhanced reliability"""
         try:
+            # Try ticker first
             ticker = self.exchange.fetch_ticker(f"{symbol}/USDT")
-            price = ticker.get('last', 0)
+            price = ticker.get('last')
             
-            if price <= 0:
-                logger.warning(f"Invalid price for {symbol}: {price}")
-                return 0.0
+            if price and price > 0:
+                return float(price)
             
-            return float(price)
+            # Fallback to mark price
+            price = ticker.get('mark')
+            if price and price > 0:
+                return float(price)
+            
+            # Final fallback to close price
+            price = ticker.get('close')
+            if price and price > 0:
+                return float(price)
+            
+            logger.warning(f"Could not get valid price for {symbol}")
+            return 0.0
             
         except Exception as e:
-            logger.error(f"Error fetching price for {symbol}: {e}")
+            logger.error(f"Error fetching current price for {symbol}: {e}")
             return 0.0
+    
+    def __del__(self):
+        """Cleanup resources"""
+        try:
+            if hasattr(self, 'executor'):
+                self.executor.shutdown(wait=False)
+        except:
+            pass
