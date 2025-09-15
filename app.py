@@ -146,8 +146,13 @@ class ProductionTradingBot:
         
         @self.app.get("/")
         async def dashboard():
-            """Serve enhanced dashboard"""
-            return HTMLResponse(content=self.get_enhanced_dashboard())
+            """Serve professional dashboard"""
+            try:
+                with open("templates/dashboard.html", "r") as f:
+                    return HTMLResponse(content=f.read())
+            except FileNotFoundError:
+                # Fallback to built-in dashboard if file not found
+                return HTMLResponse(content=self.get_enhanced_dashboard())
         
         @self.app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
