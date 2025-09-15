@@ -54,8 +54,8 @@ class Database:
         """Initialize database with required tables and proper constraints"""
         with self.get_db_connection() as conn:
             cursor = conn.cursor()
-            
-            # Enhanced signals table with better constraints
+        
+            # Add this SIGNALS table first:
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS signals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,6 +76,74 @@ class Database:
                 closed_at DATETIME,
                 exit_price REAL CHECK (exit_price > 0),
                 exit_reason TEXT
+            )
+            ''')
+            
+            # Enhanced signals table with better constraints
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS trade_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                signal_id TEXT NOT NULL,
+                entry_price REAL NOT NULL CHECK (entry_price > 0),
+                exit_price REAL CHECK (exit_price > 0),
+                pnl_usd REAL DEFAULT 0,
+                pnl_percentage REAL DEFAULT 0,
+                max_profit REAL DEFAULT 0,
+                max_loss REAL DEFAULT 0,
+                duration_minutes INTEGER DEFAULT 0,
+                exit_reason TEXT,
+                leverage INTEGER DEFAULT 10 CHECK (leverage > 0),
+                position_size_usd REAL DEFAULT 1000 CHECK (position_size_usd > 0),
+                status TEXT DEFAULT 'open' CHECK (status IN ('open', 'closed')),
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (signal_id) REFERENCES signals (signal_id) ON DELETE CASCADE
+            )
+            ''')
+            
+            # Portfolio table
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS portfolio (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                balance_usd REAL DEFAULT 1000 CHECK (balance_usd >= 0),
+                total_trades INTEGER DEFAULT 0 CHECK (total_trades >= 0),
+                winning_trades INTEGER DEFAULT 0 CHECK (winning_trades >= 0),
+                losing_trades INTEGER DEFAULT 0 CHECK (losing_trades >= 0),
+                total_pnl REAL DEFAULT 0,
+                max_drawdown REAL DEFAULT 0 CHECK (max_drawdown >= 0),
+                peak_balance REAL DEFAULT 1000 CHECK (peak_balance > 0),
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                CHECK (winning_trades + losing_trades <= total_trades)
+            )
+            ''')
+            
+            # Bot logs table
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS bot_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                level TEXT NOT NULL CHECK (level IN ('DEBUG', 'INFO', 'WARNING', 'ERROR')),
+                component TEXT NOT NULL,
+                message TEXT NOT NULL,
+                details TEXT,
+                coin TEXT,
+                data TEXT
+            )
+            ''')
+            
+            # Analysis logs table
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS analysis_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                coin TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                analysis_type TEXT NOT NULL,
+                result TEXT NOT NULL,
+                confidence REAL CHECK (confidence >= 0 AND confidence <= 100),
+                indicators TEXT,
+                patterns TEXT,
+                support_resistance TEXT
             )
             ''')
             
@@ -664,63 +732,3 @@ class Database:
         except Exception as e:
             logger.error(f"Error getting signal {signal_id}: {e}")
             return None
-            
-            # Improved trade results table
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS trade_results (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                signal_id TEXT NOT NULL,
-                entry_price REAL NOT NULL CHECK (entry_price > 0),
-                exit_price REAL CHECK (exit_price > 0),
-                pnl_usd REAL DEFAULT 0,
-                pnl_percentage REAL DEFAULT 0,
-                max_profit REAL DEFAULT 0,
-                max_loss REAL DEFAULT 0,
-                duration_minutes INTEGER DEFAULT 0,
-                exit_reason TEXT,
-                leverage INTEGER DEFAULT 10 CHECK (leverage > 0),
-                position_size_usd REAL DEFAULT 1000 CHECK (position_size_usd > 0),
-                status TEXT DEFAULT 'open' CHECK (status IN ('open', 'closed')),
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (signal_id) REFERENCES signals (signal_id) ON DELETE CASCADE
-            )
-            ''')
-            
-            # Portfolio tracking with better validation
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS portfolio (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                balance_usd REAL DEFAULT 1000 CHECK (balance_usd >= 0),
-                total_trades INTEGER DEFAULT 0 CHECK (total_trades >= 0),
-                winning_trades INTEGER DEFAULT 0 CHECK (winning_trades >= 0),
-                losing_trades INTEGER DEFAULT 0 CHECK (losing_trades >= 0),
-                total_pnl REAL DEFAULT 0,
-                max_drawdown REAL DEFAULT 0 CHECK (max_drawdown >= 0),
-                peak_balance REAL DEFAULT 1000 CHECK (peak_balance > 0),
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                CHECK (winning_trades + losing_trades <= total_trades)
-            )
-            ''')
-            
-            # Bot activity logs
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS bot_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                level TEXT NOT NULL CHECK (level IN ('DEBUG', 'INFO', 'WARNING', 'ERROR')),
-                component TEXT NOT NULL,
-                message TEXT NOT NULL,
-                details TEXT,
-                coin TEXT,
-                data TEXT
-            )
-            ''')
-            
-            # Market analysis logs
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS analysis_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                coin TEXT NOT NULL,
-                timeframe TEXT NOT NULL
