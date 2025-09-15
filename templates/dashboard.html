@@ -1,803 +1,1062 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Professional Crypto Trading Bot v3.0</title>
     <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
 
-        :root {
-            --bg-primary: #0a0a0a;
-            --bg-secondary: #141414;
-            --bg-tertiary: #1a1a1a;
-            --border-color: #2a2a2a;
-            --text-primary: #ffffff;
-            --text-secondary: #a0a0a0;
-            --accent-green: #00ff88;
-            --accent-red: #ff3366;
-            --accent-yellow: #ffaa00;
-            --accent-blue: #00aaff;
-        }
+      :root {
+        --bg-primary: #0a0a0a;
+        --bg-secondary: #141414;
+        --bg-tertiary: #1a1a1a;
+        --border-color: #2a2a2a;
+        --text-primary: #ffffff;
+        --text-secondary: #a0a0a0;
+        --accent-green: #00ff88;
+        --accent-red: #ff3366;
+        --accent-yellow: #ffaa00;
+        --accent-blue: #00aaff;
+      }
 
-        body {
-            font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
-            background: var(--bg-primary);
-            color: var(--text-primary);
-            font-size: 13px;
-            overflow-x: hidden;
-            line-height: 1.4;
-        }
+      body {
+        font-family: "SF Mono", "Monaco", "Inconsolata", "Fira Code", monospace;
+        background: var(--bg-primary);
+        color: var(--text-primary);
+        font-size: 13px;
+        overflow-x: hidden;
+        line-height: 1.4;
+      }
 
-        /* Header */
-        .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 15px 20px;
-            background: linear-gradient(90deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%);
-            border-bottom: 2px solid var(--border-color);
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
-        }
+      /* Header */
+      .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 15px 20px;
+        background: linear-gradient(
+          90deg,
+          var(--bg-secondary) 0%,
+          var(--bg-tertiary) 100%
+        );
+        border-bottom: 2px solid var(--border-color);
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+      }
 
-        .header h1 {
-            font-size: 18px;
-            color: var(--accent-green);
-            font-weight: 600;
-            letter-spacing: 1px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
+      .header h1 {
+        font-size: 18px;
+        color: var(--accent-green);
+        font-weight: 600;
+        letter-spacing: 1px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
 
-        .status-bar {
-            display: flex;
-            align-items: center;
-            gap: 20px;
-            font-size: 12px;
-        }
+      .status-bar {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        font-size: 12px;
+      }
 
-        .status-item {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            padding: 4px 8px;
-            background: rgba(0, 0, 0, 0.3);
-            border-radius: 4px;
-            border: 1px solid var(--border-color);
-        }
+      .status-item {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 8px;
+        background: rgba(0, 0, 0, 0.3);
+        border-radius: 4px;
+        border: 1px solid var(--border-color);
+      }
 
-        .status-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: var(--accent-green);
-            animation: pulse 2s infinite;
-        }
+      .status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--accent-green);
+        animation: pulse 2s infinite;
+      }
 
-        @keyframes pulse {
-            0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(0, 255, 136, 0.7); }
-            50% { opacity: 0.6; box-shadow: 0 0 0 6px rgba(0, 255, 136, 0); }
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+          box-shadow: 0 0 0 0 rgba(0, 255, 136, 0.7);
         }
+        50% {
+          opacity: 0.6;
+          box-shadow: 0 0 0 6px rgba(0, 255, 136, 0);
+        }
+      }
 
-        /* Main Layout */
+      /* Main Layout */
+      .main-container {
+        display: grid;
+        grid-template-columns: 320px 1fr 300px;
+        height: calc(100vh - 60px);
+        gap: 1px;
+        background: var(--border-color);
+      }
+
+      .panel {
+        background: var(--bg-secondary);
+        overflow-y: auto;
+        overflow-x: hidden;
+      }
+
+      .panel-header {
+        padding: 10px 15px;
+        background: linear-gradient(
+          90deg,
+          var(--bg-tertiary) 0%,
+          var(--bg-secondary) 100%
+        );
+        border-bottom: 1px solid var(--border-color);
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--accent-green);
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      /* Stats Cards */
+      .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 12px;
+        padding: 15px;
+      }
+
+      .stat-card {
+        background: linear-gradient(
+          135deg,
+          var(--bg-tertiary) 0%,
+          var(--bg-primary) 100%
+        );
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        padding: 12px;
+        position: relative;
+        overflow: hidden;
+        transition: all 0.3s ease;
+      }
+
+      .stat-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0, 255, 136, 0.1);
+        border-color: var(--accent-green);
+      }
+
+      .stat-card::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 2px;
+        background: linear-gradient(
+          90deg,
+          transparent,
+          var(--accent-green),
+          transparent
+        );
+        animation: scan 3s linear infinite;
+      }
+
+      @keyframes scan {
+        0% {
+          transform: translateX(-100%);
+        }
+        100% {
+          transform: translateX(100%);
+        }
+      }
+
+      .stat-label {
+        font-size: 10px;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        margin-bottom: 5px;
+        letter-spacing: 0.5px;
+      }
+
+      .stat-value {
+        font-size: 18px;
+        font-weight: bold;
+        color: var(--text-primary);
+        margin-bottom: 3px;
+      }
+
+      .stat-change {
+        font-size: 11px;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+
+      /* Color Classes */
+      .positive {
+        color: var(--accent-green);
+      }
+      .negative {
+        color: var(--accent-red);
+      }
+      .neutral {
+        color: var(--accent-yellow);
+      }
+
+      /* Signals Section */
+      .signals-container {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .signals-table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      .signals-table thead {
+        background: var(--bg-tertiary);
+        position: sticky;
+        top: 0;
+        z-index: 10;
+      }
+
+      .signals-table th {
+        padding: 10px;
+        text-align: left;
+        font-size: 10px;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        border-bottom: 2px solid var(--border-color);
+      }
+
+      .signals-table tbody tr {
+        border-bottom: 1px solid var(--border-color);
+        transition: all 0.2s ease;
+        cursor: pointer;
+      }
+
+      .signals-table tbody tr:hover {
+        background: rgba(0, 255, 136, 0.05);
+      }
+
+      .signals-table td {
+        padding: 12px 10px;
+        font-size: 12px;
+      }
+
+      .signal-badge {
+        display: inline-block;
+        padding: 3px 8px;
+        border-radius: 4px;
+        font-weight: 600;
+        font-size: 10px;
+        text-transform: uppercase;
+      }
+
+      .badge-long {
+        background: rgba(0, 255, 136, 0.2);
+        color: var(--accent-green);
+        border: 1px solid var(--accent-green);
+      }
+
+      .badge-short {
+        background: rgba(255, 51, 102, 0.2);
+        color: var(--accent-red);
+        border: 1px solid var(--accent-red);
+      }
+
+      /* Progress Bars */
+      .progress-bar {
+        width: 100%;
+        height: 4px;
+        background: var(--bg-tertiary);
+        border-radius: 2px;
+        overflow: hidden;
+        margin-top: 4px;
+      }
+
+      .progress-fill {
+        height: 100%;
+        background: linear-gradient(
+          90deg,
+          var(--accent-green),
+          var(--accent-blue)
+        );
+        transition: width 0.3s ease;
+      }
+
+      /* Logs */
+      .log-container {
+        max-height: 250px;
+        overflow-y: auto;
+        background: var(--bg-primary);
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+        margin: 15px;
+        padding: 10px;
+        font-family: monospace;
+        font-size: 11px;
+      }
+
+      .log-entry {
+        padding: 4px 0;
+        border-bottom: 1px solid rgba(42, 42, 42, 0.5);
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .log-timestamp {
+        color: var(--text-secondary);
+        font-size: 10px;
+      }
+
+      .log-level {
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-size: 9px;
+        font-weight: 600;
+      }
+
+      .log-INFO {
+        background: rgba(0, 255, 136, 0.2);
+        color: var(--accent-green);
+      }
+      .log-WARNING {
+        background: rgba(255, 170, 0, 0.2);
+        color: var(--accent-yellow);
+      }
+      .log-ERROR {
+        background: rgba(255, 51, 102, 0.2);
+        color: var(--accent-red);
+      }
+
+      /* Buttons */
+      .btn {
+        padding: 8px 16px;
+        background: linear-gradient(
+          135deg,
+          var(--accent-green),
+          var(--accent-blue)
+        );
+        border: none;
+        border-radius: 4px;
+        color: var(--bg-primary);
+        font-weight: 600;
+        font-size: 11px;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+
+      .btn:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0, 255, 136, 0.3);
+      }
+
+      .btn:active {
+        transform: translateY(0);
+      }
+
+      /* Empty State */
+      .empty-state {
+        text-align: center;
+        padding: 40px 20px;
+        color: var(--text-secondary);
+      }
+
+      .empty-state-icon {
+        font-size: 48px;
+        margin-bottom: 15px;
+        opacity: 0.3;
+      }
+
+      /* Loading Spinner */
+      .spinner {
+        width: 20px;
+        height: 20px;
+        border: 2px solid var(--border-color);
+        border-left-color: var(--accent-green);
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      /* Scrollbar */
+      ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+
+      ::-webkit-scrollbar-track {
+        background: var(--bg-primary);
+      }
+
+      ::-webkit-scrollbar-thumb {
+        background: var(--border-color);
+        border-radius: 4px;
+      }
+
+      ::-webkit-scrollbar-thumb:hover {
+        background: var(--text-secondary);
+      }
+
+      /* Responsive */
+      @media (max-width: 1200px) {
         .main-container {
-            display: grid;
-            grid-template-columns: 320px 1fr 300px;
-            height: calc(100vh - 60px);
-            gap: 1px;
-            background: var(--border-color);
+          grid-template-columns: 280px 1fr 260px;
         }
+      }
 
-        .panel {
-            background: var(--bg-secondary);
-            overflow-y: auto;
-            overflow-x: hidden;
+      @media (max-width: 900px) {
+        .main-container {
+          grid-template-columns: 1fr;
+          grid-template-rows: auto 1fr auto;
         }
+      }
 
-        .panel-header {
-            padding: 10px 15px;
-            background: linear-gradient(90deg, var(--bg-tertiary) 0%, var(--bg-secondary) 100%);
-            border-bottom: 1px solid var(--border-color);
-            font-size: 11px;
-            font-weight: 600;
-            color: var(--accent-green);
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
+      /* Animations */
+      .fade-in {
+        animation: fadeIn 0.3s ease;
+      }
+
+      @keyframes fadeIn {
+        from {
+          opacity: 0;
+          transform: translateY(10px);
         }
-
-        /* Stats Cards */
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 12px;
-            padding: 15px;
+        to {
+          opacity: 1;
+          transform: translateY(0);
         }
+      }
 
-        .stat-card {
-            background: linear-gradient(135deg, var(--bg-tertiary) 0%, var(--bg-primary) 100%);
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            padding: 12px;
-            position: relative;
-            overflow: hidden;
-            transition: all 0.3s ease;
-        }
+      /* Chart Modal */
+      .modal {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.9);
+        z-index: 1000;
+        animation: fadeIn 0.3s ease;
+      }
 
-        .stat-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0, 255, 136, 0.1);
-            border-color: var(--accent-green);
-        }
+      .modal-content {
+        position: relative;
+        background: var(--bg-secondary);
+        border: 2px solid var(--border-color);
+        border-radius: 8px;
+        width: 90%;
+        max-width: 1200px;
+        height: 80%;
+        margin: 5% auto;
+        overflow: hidden;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8);
+      }
 
-        .stat-card::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            height: 2px;
-            background: linear-gradient(90deg, transparent, var(--accent-green), transparent);
-            animation: scan 3s linear infinite;
-        }
+      .modal-header {
+        padding: 15px 20px;
+        background: var(--bg-tertiary);
+        border-bottom: 2px solid var(--border-color);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
 
-        @keyframes scan {
-            0% { transform: translateX(-100%); }
-            100% { transform: translateX(100%); }
-        }
+      .close-btn {
+        background: none;
+        border: none;
+        color: var(--text-secondary);
+        font-size: 24px;
+        cursor: pointer;
+        transition: color 0.3s ease;
+      }
 
-        .stat-label {
-            font-size: 10px;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            margin-bottom: 5px;
-            letter-spacing: 0.5px;
-        }
+      .close-btn:hover {
+        color: var(--accent-red);
+      }
 
-        .stat-value {
-            font-size: 18px;
-            font-weight: bold;
-            color: var(--text-primary);
-            margin-bottom: 3px;
-        }
-
-        .stat-change {
-            font-size: 11px;
-            display: flex;
-            align-items: center;
-            gap: 4px;
-        }
-
-        /* Color Classes */
-        .positive { color: var(--accent-green); }
-        .negative { color: var(--accent-red); }
-        .neutral { color: var(--accent-yellow); }
-
-        /* Signals Section */
-        .signals-container {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .signals-table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-
-        .signals-table thead {
-            background: var(--bg-tertiary);
-            position: sticky;
-            top: 0;
-            z-index: 10;
-        }
-
-        .signals-table th {
-            padding: 10px;
-            text-align: left;
-            font-size: 10px;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            border-bottom: 2px solid var(--border-color);
-        }
-
-        .signals-table tbody tr {
-            border-bottom: 1px solid var(--border-color);
-            transition: all 0.2s ease;
-            cursor: pointer;
-        }
-
-        .signals-table tbody tr:hover {
-            background: rgba(0, 255, 136, 0.05);
-        }
-
-        .signals-table td {
-            padding: 12px 10px;
-            font-size: 12px;
-        }
-
-        .signal-badge {
-            display: inline-block;
-            padding: 3px 8px;
-            border-radius: 4px;
-            font-weight: 600;
-            font-size: 10px;
-            text-transform: uppercase;
-        }
-
-        .badge-long {
-            background: rgba(0, 255, 136, 0.2);
-            color: var(--accent-green);
-            border: 1px solid var(--accent-green);
-        }
-
-        .badge-short {
-            background: rgba(255, 51, 102, 0.2);
-            color: var(--accent-red);
-            border: 1px solid var(--accent-red);
-        }
-
-        /* Progress Bars */
-        .progress-bar {
-            width: 100%;
-            height: 4px;
-            background: var(--bg-tertiary);
-            border-radius: 2px;
-            overflow: hidden;
-            margin-top: 4px;
-        }
-
-        .progress-fill {
-            height: 100%;
-            background: linear-gradient(90deg, var(--accent-green), var(--accent-blue));
-            transition: width 0.3s ease;
-        }
-
-        /* Logs */
-        .log-container {
-            max-height: 250px;
-            overflow-y: auto;
-            background: var(--bg-primary);
-            border: 1px solid var(--border-color);
-            border-radius: 4px;
-            margin: 15px;
-            padding: 10px;
-            font-family: monospace;
-            font-size: 11px;
-        }
-
-        .log-entry {
-            padding: 4px 0;
-            border-bottom: 1px solid rgba(42, 42, 42, 0.5);
-            display: flex;
-            gap: 8px;
-            align-items: center;
-        }
-
-        .log-timestamp {
-            color: var(--text-secondary);
-            font-size: 10px;
-        }
-
-        .log-level {
-            padding: 2px 6px;
-            border-radius: 3px;
-            font-size: 9px;
-            font-weight: 600;
-        }
-
-        .log-INFO { background: rgba(0, 255, 136, 0.2); color: var(--accent-green); }
-        .log-WARNING { background: rgba(255, 170, 0, 0.2); color: var(--accent-yellow); }
-        .log-ERROR { background: rgba(255, 51, 102, 0.2); color: var(--accent-red); }
-
-        /* Buttons */
-        .btn {
-            padding: 8px 16px;
-            background: linear-gradient(135deg, var(--accent-green), var(--accent-blue));
-            border: none;
-            border-radius: 4px;
-            color: var(--bg-primary);
-            font-weight: 600;
-            font-size: 11px;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0, 255, 136, 0.3);
-        }
-
-        .btn:active {
-            transform: translateY(0);
-        }
-
-        /* Empty State */
-        .empty-state {
-            text-align: center;
-            padding: 40px 20px;
-            color: var(--text-secondary);
-        }
-
-        .empty-state-icon {
-            font-size: 48px;
-            margin-bottom: 15px;
-            opacity: 0.3;
-        }
-
-        /* Loading Spinner */
-        .spinner {
-            width: 20px;
-            height: 20px;
-            border: 2px solid var(--border-color);
-            border-left-color: var(--accent-green);
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-        }
-
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-
-        /* Scrollbar */
-        ::-webkit-scrollbar {
-            width: 8px;
-            height: 8px;
-        }
-
-        ::-webkit-scrollbar-track {
-            background: var(--bg-primary);
-        }
-
-        ::-webkit-scrollbar-thumb {
-            background: var(--border-color);
-            border-radius: 4px;
-        }
-
-        ::-webkit-scrollbar-thumb:hover {
-            background: var(--text-secondary);
-        }
-
-        /* Responsive */
-        @media (max-width: 1200px) {
-            .main-container {
-                grid-template-columns: 280px 1fr 260px;
-            }
-        }
-
-        @media (max-width: 900px) {
-            .main-container {
-                grid-template-columns: 1fr;
-                grid-template-rows: auto 1fr auto;
-            }
-        }
-
-        /* Animations */
-        .fade-in {
-            animation: fadeIn 0.3s ease;
-        }
-
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-
-        /* Chart Modal */
-        .modal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.9);
-            z-index: 1000;
-            animation: fadeIn 0.3s ease;
-        }
-
-        .modal-content {
-            position: relative;
-            background: var(--bg-secondary);
-            border: 2px solid var(--border-color);
-            border-radius: 8px;
-            width: 90%;
-            max-width: 1200px;
-            height: 80%;
-            margin: 5% auto;
-            overflow: hidden;
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8);
-        }
-
-        .modal-header {
-            padding: 15px 20px;
-            background: var(--bg-tertiary);
-            border-bottom: 2px solid var(--border-color);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .close-btn {
-            background: none;
-            border: none;
-            color: var(--text-secondary);
-            font-size: 24px;
-            cursor: pointer;
-            transition: color 0.3s ease;
-        }
-
-        .close-btn:hover {
-            color: var(--accent-red);
-        }
-
-        .chart-container {
-            height: 60%;
-            background: var(--bg-primary);
-        }
+      .chart-container {
+        height: 60%;
+        background: var(--bg-primary);
+      }
     </style>
-</head>
-<body>
+  </head>
+  <body>
     <div class="header">
-        <h1>
-            <span style="font-size: 24px;">🤖</span>
-            CRYPTO TRADING BOT v3.0
-        </h1>
-        <div class="status-bar">
-            <div class="status-item">
-                <div class="status-dot"></div>
-                <span id="bot-status">ACTIVE</span>
-            </div>
-            <div class="status-item">
-                <span>UPTIME:</span>
-                <span id="uptime" style="color: var(--accent-green);">00:00:00</span>
-            </div>
-            <div class="status-item">
-                <span>SCANS:</span>
-                <span id="scan-count" style="color: var(--accent-blue);">0</span>
-            </div>
-            <div class="status-item">
-                <span>LAST UPDATE:</span>
-                <span id="last-update" style="color: var(--accent-yellow);">--:--:--</span>
-            </div>
+      <h1>
+        <span style="font-size: 24px">🤖</span>
+        CRYPTO TRADING BOT v3.0
+      </h1>
+      <div class="status-bar">
+        <div class="status-item">
+          <div class="status-dot"></div>
+          <span id="bot-status">ACTIVE</span>
         </div>
+        <div class="status-item">
+          <span>UPTIME:</span>
+          <span id="uptime" style="color: var(--accent-green)">00:00:00</span>
+        </div>
+        <div class="status-item">
+          <span>SCANS:</span>
+          <span id="scan-count" style="color: var(--accent-blue)">0</span>
+        </div>
+        <div class="status-item">
+          <span>LAST UPDATE:</span>
+          <span id="last-update" style="color: var(--accent-yellow)"
+            >--:--:--</span
+          >
+        </div>
+      </div>
     </div>
 
     <div class="main-container">
-        <!-- Left Panel - Portfolio Stats -->
-        <div class="panel">
-            <div class="panel-header">
-                <span>📊 PORTFOLIO OVERVIEW</span>
+      <!-- Left Panel - Portfolio Stats -->
+      <div class="panel">
+        <div class="panel-header">
+          <span>📊 PORTFOLIO OVERVIEW</span>
+        </div>
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-label">Total Balance</div>
+            <div class="stat-value" id="portfolio-balance">$1,000.00</div>
+            <div class="stat-change" id="portfolio-change-container">
+              <span id="portfolio-change">+0.00%</span>
             </div>
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <div class="stat-label">Total Balance</div>
-                    <div class="stat-value" id="portfolio-balance">$1,000.00</div>
-                    <div class="stat-change" id="portfolio-change-container">
-                        <span id="portfolio-change">+0.00%</span>
-                    </div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">Active Signals</div>
-                    <div class="stat-value" id="active-signals">0</div>
-                    <div class="stat-change neutral" id="total-signals">Total: 0</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">Win Rate</div>
-                    <div class="stat-value" id="win-rate">0.0%</div>
-                    <div class="stat-change" id="win-loss-ratio">W: 0 / L: 0</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">Total P&L</div>
-                    <div class="stat-value" id="total-pnl">$0.00</div>
-                    <div class="stat-change" id="pnl-percentage">0.00%</div>
-                </div>
-            </div>
-
-            <div class="panel-header">
-                <span>📈 PERFORMANCE METRICS</span>
-            </div>
-            <div style="padding: 15px;">
-                <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border-color);">
-                    <span style="color: var(--text-secondary);">Best Trade:</span>
-                    <span id="best-trade" class="positive">$0.00</span>
-                </div>
-                <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border-color);">
-                    <span style="color: var(--text-secondary);">Worst Trade:</span>
-                    <span id="worst-trade" class="negative">$0.00</span>
-                </div>
-                <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border-color);">
-                    <span style="color: var(--text-secondary);">Average Trade:</span>
-                    <span id="avg-trade" class="neutral">$0.00</span>
-                </div>
-                <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border-color);">
-                    <span style="color: var(--text-secondary);">Open P&L:</span>
-                    <span id="open-pnl" class="neutral">$0.00</span>
-                </div>
-                <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border-color);">
-                    <span style="color: var(--text-secondary);">Max Drawdown:</span>
-                    <span id="max-drawdown" class="negative">0.00%</span>
-                </div>
-            </div>
-
-            <div class="panel-header">
-                <span>⚙️ SYSTEM STATUS</span>
-            </div>
-            <div style="padding: 15px;">
-                <div style="display: flex; justify-content: space-between; padding: 8px 0;">
-                    <span style="color: var(--text-secondary);">CPU Usage:</span>
-                    <span id="cpu-usage">--%</span>
-                </div>
-                <div style="display: flex; justify-content: space-between; padding: 8px 0;">
-                    <span style="color: var(--text-secondary);">Memory:</span>
-                    <span id="memory-usage">--%</span>
-                </div>
-                <div style="display: flex; justify-content: space-between; padding: 8px 0;">
-                    <span style="color: var(--text-secondary);">API Latency:</span>
-                    <span id="latency" class="positive">-- ms</span>
-                </div>
-            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Active Signals</div>
+            <div class="stat-value" id="active-signals">0</div>
+            <div class="stat-change neutral" id="total-signals">Total: 0</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Win Rate</div>
+            <div class="stat-value" id="win-rate">0.0%</div>
+            <div class="stat-change" id="win-loss-ratio">W: 0 / L: 0</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Total P&L</div>
+            <div class="stat-value" id="total-pnl">$0.00</div>
+            <div class="stat-change" id="pnl-percentage">0.00%</div>
+          </div>
         </div>
 
-        <!-- Center Panel - Active Signals -->
-        <div class="panel signals-container">
-            <div class="panel-header">
-                <span>📡 ACTIVE TRADING SIGNALS</span>
-                <button class="btn" onclick="refreshData()">REFRESH</button>
-            </div>
-            
-            <div style="flex: 1; overflow-y: auto;">
-                <table class="signals-table">
-                    <thead>
-                        <tr>
-                            <th>Coin</th>
-                            <th>Direction</th>
-                            <th>Entry</th>
-                            <th>Current</th>
-                            <th>Target</th>
-                            <th>Stop</th>
-                            <th>P&L</th>
-                            <th>Progress</th>
-                            <th>Confidence</th>
-                        </tr>
-                    </thead>
-                    <tbody id="signals-tbody">
-                        <tr>
-                            <td colspan="9">
-                                <div class="empty-state">
-                                    <div class="empty-state-icon">📊</div>
-                                    <p>No active signals</p>
-                                    <p style="font-size: 11px; margin-top: 10px;">Bot is scanning for opportunities...</p>
-                                </div>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-
-            <div class="panel-header">
-                <span>📝 ACTIVITY LOG</span>
-            </div>
-            <div class="log-container" id="log-container">
-                <!-- Logs will be inserted here -->
-            </div>
+        <div class="panel-header">
+          <span>📈 PERFORMANCE METRICS</span>
+        </div>
+        <div style="padding: 15px">
+          <div
+            style="
+              display: flex;
+              justify-content: space-between;
+              padding: 8px 0;
+              border-bottom: 1px solid var(--border-color);
+            "
+          >
+            <span style="color: var(--text-secondary)">Best Trade:</span>
+            <span id="best-trade" class="positive">$0.00</span>
+          </div>
+          <div
+            style="
+              display: flex;
+              justify-content: space-between;
+              padding: 8px 0;
+              border-bottom: 1px solid var(--border-color);
+            "
+          >
+            <span style="color: var(--text-secondary)">Worst Trade:</span>
+            <span id="worst-trade" class="negative">$0.00</span>
+          </div>
+          <div
+            style="
+              display: flex;
+              justify-content: space-between;
+              padding: 8px 0;
+              border-bottom: 1px solid var(--border-color);
+            "
+          >
+            <span style="color: var(--text-secondary)">Average Trade:</span>
+            <span id="avg-trade" class="neutral">$0.00</span>
+          </div>
+          <div
+            style="
+              display: flex;
+              justify-content: space-between;
+              padding: 8px 0;
+              border-bottom: 1px solid var(--border-color);
+            "
+          >
+            <span style="color: var(--text-secondary)">Open P&L:</span>
+            <span id="open-pnl" class="neutral">$0.00</span>
+          </div>
+          <div
+            style="
+              display: flex;
+              justify-content: space-between;
+              padding: 8px 0;
+              border-bottom: 1px solid var(--border-color);
+            "
+          >
+            <span style="color: var(--text-secondary)">Max Drawdown:</span>
+            <span id="max-drawdown" class="negative">0.00%</span>
+          </div>
         </div>
 
-        <!-- Right Panel - Analysis -->
-        <div class="panel">
-            <div class="panel-header">
-                <span>🔍 MARKET ANALYSIS</span>
-            </div>
-            <div id="analysis-summary" style="padding: 15px;">
-                <div class="empty-state">
-                    <p style="color: var(--text-secondary); font-size: 11px;">No analysis data available</p>
-                </div>
-            </div>
-
-            <div class="panel-header">
-                <span>💹 MONITORED PAIRS</span>
-            </div>
-            <div id="trading-pairs" style="padding: 15px; max-height: 200px; overflow-y: auto;">
-                <!-- Pairs will be listed here -->
-            </div>
-
-            <div class="panel-header">
-                <span>🔔 RECENT ALERTS</span>
-            </div>
-            <div id="recent-alerts" style="padding: 15px;">
-                <div style="color: var(--text-secondary); font-size: 11px;">No recent alerts</div>
-            </div>
+        <div class="panel-header">
+          <span>⚙️ SYSTEM STATUS</span>
         </div>
+        <div style="padding: 15px">
+          <div
+            style="
+              display: flex;
+              justify-content: space-between;
+              padding: 8px 0;
+            "
+          >
+            <span style="color: var(--text-secondary)">CPU Usage:</span>
+            <span id="cpu-usage">--%</span>
+          </div>
+          <div
+            style="
+              display: flex;
+              justify-content: space-between;
+              padding: 8px 0;
+            "
+          >
+            <span style="color: var(--text-secondary)">Memory:</span>
+            <span id="memory-usage">--%</span>
+          </div>
+          <div
+            style="
+              display: flex;
+              justify-content: space-between;
+              padding: 8px 0;
+            "
+          >
+            <span style="color: var(--text-secondary)">API Latency:</span>
+            <span id="latency" class="positive">-- ms</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Center Panel - Active Signals -->
+      <div class="panel signals-container">
+        <div class="panel-header">
+          <span>📡 ACTIVE TRADING SIGNALS</span>
+          <button class="btn" onclick="refreshData()">REFRESH</button>
+        </div>
+
+        <div style="flex: 1; overflow-y: auto">
+          <table class="signals-table">
+            <thead>
+              <tr>
+                <th>Coin</th>
+                <th>Direction</th>
+                <th>Entry</th>
+                <th>Current</th>
+                <th>Target</th>
+                <th>Stop</th>
+                <th>P&L</th>
+                <th>Progress</th>
+                <th>Confidence</th>
+              </tr>
+            </thead>
+            <tbody id="signals-tbody">
+              <tr>
+                <td colspan="9">
+                  <div class="empty-state">
+                    <div class="empty-state-icon">📊</div>
+                    <p>No active signals</p>
+                    <p style="font-size: 11px; margin-top: 10px">
+                      Bot is scanning for opportunities...
+                    </p>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="panel-header">
+          <span>📝 ACTIVITY LOG</span>
+        </div>
+        <div class="log-container" id="log-container">
+          <!-- Logs will be inserted here -->
+        </div>
+      </div>
+
+      <!-- Right Panel - Analysis -->
+      <div class="panel">
+        <div class="panel-header">
+          <span>🔍 MARKET ANALYSIS</span>
+        </div>
+        <div id="analysis-summary" style="padding: 15px">
+          <div class="empty-state">
+            <p style="color: var(--text-secondary); font-size: 11px">
+              No analysis data available
+            </p>
+          </div>
+        </div>
+
+        <div class="panel-header">
+          <span>💹 MONITORED PAIRS</span>
+        </div>
+        <div
+          id="trading-pairs"
+          style="padding: 15px; max-height: 200px; overflow-y: auto"
+        >
+          <!-- Pairs will be listed here -->
+        </div>
+
+        <div class="panel-header">
+          <span>🔔 RECENT ALERTS</span>
+        </div>
+        <div id="recent-alerts" style="padding: 15px">
+          <div style="color: var(--text-secondary); font-size: 11px">
+            No recent alerts
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Chart Modal -->
     <div id="chart-modal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2 id="modal-title" style="color: var(--accent-green);">CHART ANALYSIS</h2>
-                <button class="close-btn" onclick="closeModal()">×</button>
-            </div>
-            <div class="chart-container" id="chart-container"></div>
-            <div style="padding: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
-                <div>
-                    <h3 style="color: var(--accent-green); margin-bottom: 10px;">Technical Indicators</h3>
-                    <div id="indicators-data" style="font-size: 12px; color: var(--text-secondary);"></div>
-                </div>
-                <div>
-                    <h3 style="color: var(--accent-blue); margin-bottom: 10px;">Signal Analysis</h3>
-                    <div id="signal-analysis" style="font-size: 12px; color: var(--text-secondary);"></div>
-                </div>
-            </div>
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 id="modal-title" style="color: var(--accent-green)">
+            CHART ANALYSIS
+          </h2>
+          <button class="close-btn" onclick="closeModal()">×</button>
         </div>
+        <div class="chart-container" id="chart-container"></div>
+        <div
+          style="
+            padding: 20px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+          "
+        >
+          <div>
+            <h3 style="color: var(--accent-green); margin-bottom: 10px">
+              Technical Indicators
+            </h3>
+            <div
+              id="indicators-data"
+              style="font-size: 12px; color: var(--text-secondary)"
+            ></div>
+          </div>
+          <div>
+            <h3 style="color: var(--accent-blue); margin-bottom: 10px">
+              Signal Analysis
+            </h3>
+            <div
+              id="signal-analysis"
+              style="font-size: 12px; color: var(--text-secondary)"
+            ></div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <script>
-        let ws;
-        let chart;
-        let currentSignals = [];
-        let startTime = new Date();
+      let ws;
+      let chart;
+      let currentSignals = [];
+      let startTime = new Date();
+      let logContainer = document.getElementById("log-container");
+      // Initialize WebSocket
+      function initWebSocket() {
+        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const wsUrl = `${protocol}//${window.location.host}/ws`;
 
-        // Initialize WebSocket
-        function initWebSocket() {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}/ws`;
-            
-            ws = new WebSocket(wsUrl);
-            
-            ws.onopen = () => {
-                console.log('WebSocket connected');
-                addLog('INFO', 'SYSTEM', 'WebSocket connection established');
-            };
-            
-            ws.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    handleWebSocketMessage(data);
-                } catch (e) {
-                    console.error('WebSocket message error:', e);
-                }
-            };
-            
-            ws.onclose = () => {
-                console.log('WebSocket disconnected');
-                addLog('WARNING', 'SYSTEM', 'WebSocket disconnected, reconnecting...');
-                setTimeout(initWebSocket, 5000);
-            };
-            
-            ws.onerror = (error) => {
-                console.error('WebSocket error:', error);
-                addLog('ERROR', 'SYSTEM', 'WebSocket connection error');
-            };
+        ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+          console.log("WebSocket connected");
+          addLog("INFO", "SYSTEM", "WebSocket connection established");
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            handleWebSocketMessage(data);
+          } catch (e) {
+            console.error("WebSocket message error:", e);
+          }
+        };
+
+        ws.onclose = () => {
+          console.log("WebSocket disconnected");
+          addLog(
+            "WARNING",
+            "SYSTEM",
+            "WebSocket disconnected, reconnecting..."
+          );
+          setTimeout(initWebSocket, 5000);
+        };
+
+        ws.onerror = (error) => {
+          console.error("WebSocket error:", error);
+          addLog("ERROR", "SYSTEM", "WebSocket connection error");
+        };
+      }
+
+      function handleWebSocketMessage(data) {
+        switch (data.type) {
+          case "connection_established":
+            // Don't add a log for this - it's just connection confirmation
+            break;
+          case "new_signal":
+            addLog(
+              "INFO",
+              "SIGNAL",
+              `New ${data.signal.direction} signal: ${data.signal.coin}`
+            );
+            refreshData();
+            break;
+          case "signal_closed":
+            addLog(
+              "INFO",
+              "SIGNAL",
+              `Signal closed: ${data.coin} - ${data.exit_reason}`
+            );
+            refreshData();
+            break;
+          case "scan_started":
+            addLog(
+              "INFO",
+              "SCANNER",
+              `Market scan #${data.scan_number} started`
+            );
+            break;
+          case "scan_completed":
+            addLog(
+              "INFO",
+              "SCANNER",
+              `Scan completed: ${data.signals_found} signals found`
+            );
+            document.getElementById("scan-count").textContent = data.scan_count;
+            break;
         }
+      }
 
-        function handleWebSocketMessage(data) {
-            switch(data.type) {
-                case 'new_signal':
-                    addLog('INFO', 'SIGNAL', `New ${data.signal.direction} signal: ${data.signal.coin}`);
-                    refreshData();
-                    break;
-                case 'signal_closed':
-                    addLog('INFO', 'SIGNAL', `Signal closed: ${data.coin} - ${data.exit_reason}`);
-                    refreshData();
-                    break;
-                case 'scan_started':
-                    addLog('INFO', 'SCANNER', `Market scan #${data.scan_number} started`);
-                    break;
-                case 'scan_completed':
-                    addLog('INFO', 'SCANNER', `Scan completed: ${data.signals_found} signals found`);
-                    document.getElementById('scan-count').textContent = data.scan_count;
-                    break;
-            }
+      async function loadInitialLogs() {
+        try {
+          const response = await fetch("/api/logs");
+          const data = await response.json();
+
+          if (data.logs && data.logs.length > 0) {
+            // Clear any existing logs
+            logContainer.innerHTML = "";
+
+            // Add logs in reverse order (newest first)
+            data.logs.forEach((log) => {
+              addLogFromBackend(log);
+            });
+          }
+        } catch (error) {
+          console.error("Failed to load initial logs:", error);
         }
+      }
 
-        function addLog(level, component, message) {
-            const timestamp = new Date().toLocaleTimeString();
-            const logEntry = document.createElement('div');
-            logEntry.className = 'log-entry fade-in';
-            logEntry.innerHTML = `
+      // Add log from backend data
+      function addLogFromBackend(logData) {
+        const logEntry = document.createElement("div");
+        logEntry.className = "log-entry fade-in";
+
+        // Parse timestamp
+        const timestamp = new Date(logData.timestamp).toLocaleTimeString();
+
+        logEntry.innerHTML = `
+        <span class="log-timestamp">[${timestamp}]</span>
+        <span class="log-level log-${logData.level}">${logData.level}</span>
+        <span style="color: var(--accent-blue);">[${logData.component}]</span>
+        <span>${logData.message}</span>
+        ${
+          logData.details
+            ? `<span style="color: var(--text-secondary);"> - ${logData.details}</span>`
+            : ""
+        }
+    `;
+
+        // Add to top of container
+        logContainer.insertBefore(logEntry, logContainer.firstChild);
+
+        // Keep only last 50 entries
+        while (logContainer.children.length > 50) {
+          logContainer.removeChild(logContainer.lastChild);
+        }
+      }
+
+      async function loadSystemUptime() {
+        try {
+          const response = await fetch("/api/system");
+          const data = await response.json();
+
+          if (data.uptime) {
+            // Calculate actual start time based on server uptime
+            startTime = new Date(Date.now() - data.uptime * 1000);
+
+            // Update scan count
+            document.getElementById("scan-count").textContent =
+              data.scan_count || 0;
+          }
+        } catch (error) {
+          console.error("Failed to load system stats:", error);
+        }
+      }
+
+      function addLog(level, component, message) {
+        const timestamp = new Date().toLocaleTimeString();
+        const logEntry = document.createElement("div");
+        logEntry.className = "log-entry fade-in";
+        logEntry.innerHTML = `
                 <span class="log-timestamp">[${timestamp}]</span>
                 <span class="log-level log-${level}">${level}</span>
                 <span style="color: var(--accent-blue);">[${component}]</span>
                 <span>${message}</span>
             `;
-            
-            const container = document.getElementById('log-container');
-            container.insertBefore(logEntry, container.firstChild);
-            
-            // Keep only last 50 entries
-            while (container.children.length > 50) {
-                container.removeChild(container.lastChild);
-            }
-            
-            document.getElementById('last-update').textContent = timestamp;
+
+        const container = document.getElementById("log-container");
+        container.insertBefore(logEntry, container.firstChild);
+
+        // Keep only last 50 entries
+        while (container.children.length > 50) {
+          container.removeChild(container.lastChild);
         }
 
-        function updateUptime() {
-            const now = new Date();
-            const diff = now - startTime;
-            const hours = Math.floor(diff / 3600000);
-            const minutes = Math.floor((diff % 3600000) / 60000);
-            const seconds = Math.floor((diff % 60000) / 1000);
-            
-            document.getElementById('uptime').textContent = 
-                `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-        }
+        document.getElementById("last-update").textContent = timestamp;
+      }
 
-        async function refreshData() {
-            try {
-                const [signalsResp, portfolioResp, systemResp] = await Promise.all([
-                    fetch('/api/signals'),
-                    fetch('/api/portfolio'),
-                    fetch('/api/system').catch(() => ({ ok: false }))
-                ]);
-                
-                const signalsData = await signalsResp.json();
-                const portfolioData = await portfolioResp.json();
-                const systemData = systemResp.ok ? await systemResp.json() : null;
-                
-                updateSignalsDisplay(signalsData.signals || []);
-                updatePortfolioStats(portfolioData.portfolio || {});
-                
-                if (systemData) {
-                    updateSystemStats(systemData);
-                }
-                
-            } catch (error) {
-                console.error('Error refreshing data:', error);
-                addLog('ERROR', 'SYSTEM', 'Failed to refresh data');
-            }
-        }
+      function updateUptime() {
+        const now = new Date();
+        const diff = now - startTime;
+        const hours = Math.floor(diff / 3600000);
+        const minutes = Math.floor((diff % 3600000) / 60000);
+        const seconds = Math.floor((diff % 60000) / 1000);
 
-        function updatePortfolioStats(portfolio) {
-            // Safely update portfolio stats with defaults
-            const balance = portfolio.total_balance || 1000;
-            const totalPnl = portfolio.total_pnl || 0;
-            const totalTrades = portfolio.total_trades || 0;
-            const winningTrades = portfolio.winning_trades || 0;
-            const losingTrades = portfolio.losing_trades || 0;
-            const winRate = portfolio.win_rate || 0;
-            
-            document.getElementById('portfolio-balance').textContent = `${balance.toFixed(2)}`;
-            
-            const changePercent = ((totalPnl / 1000) * 100);
-            const changeElement = document.getElementById('portfolio-change');
-            changeElement.textContent = `${totalPnl >= 0 ? '+' : ''}${changePercent.toFixed(2)}%`;
-            changeElement.className = totalPnl >= 0 ? 'positive' : 'negative';
-            
-            document.getElementById('active-signals').textContent = currentSignals.length;
-            document.getElementById('total-signals').textContent = `Total: ${totalTrades}`;
-            
-            document.getElementById('win-rate').textContent = `${winRate.toFixed(1)}%`;
-            document.getElementById('win-loss-ratio').textContent = `W: ${winningTrades} / L: ${losingTrades}`;
-            
-            document.getElementById('total-pnl').textContent = `${totalPnl.toFixed(2)}`;
-            document.getElementById('pnl-percentage').textContent = `${changePercent.toFixed(2)}%`;
-            document.getElementById('pnl-percentage').className = totalPnl >= 0 ? 'positive' : 'negative';
-            
-            // Update detailed metrics
-            document.getElementById('best-trade').textContent = `${(portfolio.best_trade || 0).toFixed(2)}`;
-            document.getElementById('worst-trade').textContent = `${(portfolio.worst_trade || 0).toFixed(2)}`;
-            document.getElementById('avg-trade').textContent = `${(portfolio.avg_pnl || 0).toFixed(2)}`;
-            document.getElementById('open-pnl').textContent = `${(portfolio.open_pnl || 0).toFixed(2)}`;
-            document.getElementById('max-drawdown').textContent = `${(portfolio.max_drawdown || 0).toFixed(2)}%`;
-        }
+        document.getElementById("uptime").textContent = `${hours
+          .toString()
+          .padStart(2, "0")}:${minutes.toString().padStart(2, "0")}:${seconds
+          .toString()
+          .padStart(2, "0")}`;
+      }
 
-        function updateSignalsDisplay(signals) {
-            currentSignals = signals;
-            const tbody = document.getElementById('signals-tbody');
-            
-            if (!signals || signals.length === 0) {
-                tbody.innerHTML = `
+      async function refreshData() {
+        try {
+          const [signalsResp, portfolioResp, systemResp] = await Promise.all([
+            fetch("/api/signals"),
+            fetch("/api/portfolio"),
+            fetch("/api/system").catch(() => ({ ok: false })),
+          ]);
+
+          const signalsData = await signalsResp.json();
+          const portfolioData = await portfolioResp.json();
+          const systemData = systemResp.ok ? await systemResp.json() : null;
+
+          updateSignalsDisplay(signalsData.signals || []);
+          updatePortfolioStats(portfolioData.portfolio || {});
+
+          if (systemData) {
+            updateSystemStats(systemData);
+          }
+        } catch (error) {
+          console.error("Error refreshing data:", error);
+          addLog("ERROR", "SYSTEM", "Failed to refresh data");
+        }
+      }
+
+      function updatePortfolioStats(portfolio) {
+        // Safely update portfolio stats with defaults
+        const balance = portfolio.total_balance || 1000;
+        const totalPnl = portfolio.total_pnl || 0;
+        const totalTrades = portfolio.total_trades || 0;
+        const winningTrades = portfolio.winning_trades || 0;
+        const losingTrades = portfolio.losing_trades || 0;
+        const winRate = portfolio.win_rate || 0;
+
+        document.getElementById(
+          "portfolio-balance"
+        ).textContent = `${balance.toFixed(2)}`;
+
+        const changePercent = (totalPnl / 1000) * 100;
+        const changeElement = document.getElementById("portfolio-change");
+        changeElement.textContent = `${
+          totalPnl >= 0 ? "+" : ""
+        }${changePercent.toFixed(2)}%`;
+        changeElement.className = totalPnl >= 0 ? "positive" : "negative";
+
+        document.getElementById("active-signals").textContent =
+          currentSignals.length;
+        document.getElementById(
+          "total-signals"
+        ).textContent = `Total: ${totalTrades}`;
+
+        document.getElementById("win-rate").textContent = `${winRate.toFixed(
+          1
+        )}%`;
+        document.getElementById(
+          "win-loss-ratio"
+        ).textContent = `W: ${winningTrades} / L: ${losingTrades}`;
+
+        document.getElementById("total-pnl").textContent = `${totalPnl.toFixed(
+          2
+        )}`;
+        document.getElementById(
+          "pnl-percentage"
+        ).textContent = `${changePercent.toFixed(2)}%`;
+        document.getElementById("pnl-percentage").className =
+          totalPnl >= 0 ? "positive" : "negative";
+
+        // Update detailed metrics
+        document.getElementById("best-trade").textContent = `${(
+          portfolio.best_trade || 0
+        ).toFixed(2)}`;
+        document.getElementById("worst-trade").textContent = `${(
+          portfolio.worst_trade || 0
+        ).toFixed(2)}`;
+        document.getElementById("avg-trade").textContent = `${(
+          portfolio.avg_pnl || 0
+        ).toFixed(2)}`;
+        document.getElementById("open-pnl").textContent = `${(
+          portfolio.open_pnl || 0
+        ).toFixed(2)}`;
+        document.getElementById("max-drawdown").textContent = `${(
+          portfolio.max_drawdown || 0
+        ).toFixed(2)}%`;
+      }
+
+      function updateSignalsDisplay(signals) {
+        currentSignals = signals;
+        const tbody = document.getElementById("signals-tbody");
+
+        if (!signals || signals.length === 0) {
+          tbody.innerHTML = `
                     <tr>
                         <td colspan="9">
                             <div class="empty-state">
@@ -808,100 +1067,145 @@
                         </td>
                     </tr>
                 `;
-                return;
-            }
-            
-            tbody.innerHTML = signals.map(signal => {
-                const pnl = signal.live_pnl_usd || signal.pnl_usd || 0;
-                const pnlPercent = signal.live_pnl_percentage || signal.pnl_percentage || 0;
-                const tpProgress = signal.tp_progress || 0;
-                
-                return `
-                    <tr onclick="showChart('${signal.coin}', '${signal.signal_id}')" class="fade-in">
-                        <td style="font-weight: bold; color: var(--accent-green);">${signal.coin}</td>
-                        <td><span class="signal-badge badge-${signal.direction.toLowerCase()}">${signal.direction}</span></td>
+          return;
+        }
+
+        tbody.innerHTML = signals
+          .map((signal) => {
+            const pnl = signal.live_pnl_usd || signal.pnl_usd || 0;
+            const pnlPercent =
+              signal.live_pnl_percentage || signal.pnl_percentage || 0;
+            const tpProgress = signal.tp_progress || 0;
+
+            return `
+                    <tr onclick="showChart('${signal.coin}', '${
+              signal.signal_id
+            }')" class="fade-in">
+                        <td style="font-weight: bold; color: var(--accent-green);">${
+                          signal.coin
+                        }</td>
+                        <td><span class="signal-badge badge-${signal.direction.toLowerCase()}">${
+              signal.direction
+            }</span></td>
                         <td>${signal.entry_price.toFixed(6)}</td>
-                        <td>${(signal.current_price || signal.entry_price).toFixed(6)}</td>
-                        <td style="color: var(--accent-green);">${signal.take_profit.toFixed(6)}</td>
-                        <td style="color: var(--accent-red);">${signal.stop_loss.toFixed(6)}</td>
-                        <td class="${pnl >= 0 ? 'positive' : 'negative'}">
+                        <td>${(
+                          signal.current_price || signal.entry_price
+                        ).toFixed(6)}</td>
+                        <td style="color: var(--accent-green);">${signal.take_profit.toFixed(
+                          6
+                        )}</td>
+                        <td style="color: var(--accent-red);">${signal.stop_loss.toFixed(
+                          6
+                        )}</td>
+                        <td class="${pnl >= 0 ? "positive" : "negative"}">
                             ${pnl.toFixed(2)}<br>
                             <small>${pnlPercent.toFixed(1)}%</small>
                         </td>
                         <td>
                             <div class="progress-bar">
-                                <div class="progress-fill" style="width: ${Math.min(100, Math.max(0, tpProgress))}%"></div>
+                                <div class="progress-fill" style="width: ${Math.min(
+                                  100,
+                                  Math.max(0, tpProgress)
+                                )}%"></div>
                             </div>
                             <small>${tpProgress.toFixed(0)}%</small>
                         </td>
                         <td style="text-align: center;">
-                            <span style="color: var(--accent-yellow);">${signal.confidence}%</span>
+                            <span style="color: var(--accent-yellow);">${
+                              signal.confidence
+                            }%</span>
                         </td>
                     </tr>
                 `;
-            }).join('');
-        }
+          })
+          .join("");
+      }
 
-        function updateSystemStats(system) {
-            if (system.cpu_usage !== undefined) {
-                document.getElementById('cpu-usage').textContent = `${system.cpu_usage.toFixed(1)}%`;
-            }
-            if (system.memory_usage !== undefined) {
-                document.getElementById('memory-usage').textContent = `${system.memory_usage.toFixed(1)}%`;
-            }
+      function updateSystemStats(system) {
+        if (system.cpu_usage !== undefined) {
+          document.getElementById(
+            "cpu-usage"
+          ).textContent = `${system.cpu_usage.toFixed(1)}%`;
         }
+        if (system.memory_usage !== undefined) {
+          document.getElementById(
+            "memory-usage"
+          ).textContent = `${system.memory_usage.toFixed(1)}%`;
+        }
+      }
 
-        async function showChart(coin, signalId) {
-            const modal = document.getElementById('chart-modal');
-            modal.style.display = 'block';
-            document.getElementById('modal-title').textContent = `${coin} CHART ANALYSIS`;
-            
-            const signal = currentSignals.find(s => s.signal_id === signalId);
-            if (signal) {
-                document.getElementById('indicators-data').innerHTML = `
-                    RSI: ${signal.indicators?.rsi || 'N/A'}<br>
-                    MACD: ${signal.indicators?.macd?.toFixed(6) || 'N/A'}<br>
-                    Volume Ratio: ${signal.indicators?.volume_ratio || 'N/A'}
+      async function showChart(coin, signalId) {
+        const modal = document.getElementById("chart-modal");
+        modal.style.display = "block";
+        document.getElementById(
+          "modal-title"
+        ).textContent = `${coin} CHART ANALYSIS`;
+
+        const signal = currentSignals.find((s) => s.signal_id === signalId);
+        if (signal) {
+          document.getElementById("indicators-data").innerHTML = `
+                    RSI: ${signal.indicators?.rsi || "N/A"}<br>
+                    MACD: ${signal.indicators?.macd?.toFixed(6) || "N/A"}<br>
+                    Volume Ratio: ${signal.indicators?.volume_ratio || "N/A"}
                 `;
-                
-                document.getElementById('signal-analysis').innerHTML = `
+
+          document.getElementById("signal-analysis").innerHTML = `
                     Direction: ${signal.direction}<br>
                     Confidence: ${signal.confidence}%<br>
-                    Risk/Reward: ${signal.analysis_data?.risk_reward_ratio || 'N/A'}<br>
+                    Risk/Reward: ${
+                      signal.analysis_data?.risk_reward_ratio || "N/A"
+                    }<br>
                     <br>Reasons:<br>
-                    ${(signal.analysis_data?.reasons || []).map(r => `• ${r}`).join('<br>')}
+                    ${(signal.analysis_data?.reasons || [])
+                      .map((r) => `• ${r}`)
+                      .join("<br>")}
                 `;
-            }
         }
+      }
 
-        function closeModal() {
-            document.getElementById('chart-modal').style.display = 'none';
+      function closeModal() {
+        document.getElementById("chart-modal").style.display = "none";
+      }
+
+      // Initialize
+      document.addEventListener("DOMContentLoaded", async () => {
+        // Load real data from server first
+        await loadSystemUptime();
+        await loadInitialLogs();
+
+        // Then establish WebSocket for real-time updates
+        initWebSocket();
+        refreshData();
+
+        setInterval(updateUptime, 1000);
+        setInterval(refreshData, 15000); // Refresh every 15 seconds
+
+        // Load system stats periodically
+        setInterval(loadSystemUptime, 30000);
+
+        // Simulate system stats
+        setInterval(() => {
+          document.getElementById("cpu-usage").textContent = `${(
+            Math.random() * 30 +
+            10
+          ).toFixed(1)}%`;
+          document.getElementById("memory-usage").textContent = `${(
+            Math.random() * 40 +
+            30
+          ).toFixed(1)}%`;
+          document.getElementById("latency").textContent = `${Math.floor(
+            Math.random() * 50 + 20
+          )} ms`;
+        }, 5000);
+      });
+
+      // Close modal on outside click
+      window.onclick = (event) => {
+        const modal = document.getElementById("chart-modal");
+        if (event.target === modal) {
+          closeModal();
         }
-
-        // Initialize
-        document.addEventListener('DOMContentLoaded', () => {
-            addLog('INFO', 'SYSTEM', 'Dashboard initialized');
-            initWebSocket();
-            refreshData();
-            
-            setInterval(updateUptime, 1000);
-            setInterval(refreshData, 15000); // Refresh every 15 seconds
-            
-            // Simulate system stats
-            setInterval(() => {
-                document.getElementById('cpu-usage').textContent = `${(Math.random() * 30 + 10).toFixed(1)}%`;
-                document.getElementById('memory-usage').textContent = `${(Math.random() * 40 + 30).toFixed(1)}%`;
-                document.getElementById('latency').textContent = `${Math.floor(Math.random() * 50 + 20)} ms`;
-            }, 5000);
-        });
-
-        // Close modal on outside click
-        window.onclick = (event) => {
-            const modal = document.getElementById('chart-modal');
-            if (event.target === modal) {
-                closeModal();
-            }
-        };
+      };
     </script>
-</body>
+  </body>
 </html>
