@@ -95,7 +95,7 @@ class TradingBot:
         async def dashboard():
             """Serve the main dashboard"""
             try:
-                with open("dashboard.html", "r") as f:
+                with open("templates/dashboard.html", "r") as f:
                     return HTMLResponse(content=f.read())
             except FileNotFoundError:
                 return HTMLResponse(content=self.get_minimal_dashboard())
