@@ -72,6 +72,36 @@ class Database:
         )
         ''')
         
+        # Bot activity logs table
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS bot_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            level TEXT NOT NULL,
+            component TEXT NOT NULL,
+            message TEXT NOT NULL,
+            details TEXT,
+            coin TEXT,
+            data TEXT
+        )
+        ''')
+        
+        # Market analysis logs
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS analysis_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            coin TEXT NOT NULL,
+            timeframe TEXT NOT NULL,
+            analysis_type TEXT NOT NULL,
+            result TEXT NOT NULL,
+            confidence REAL,
+            indicators TEXT,
+            patterns TEXT,
+            support_resistance TEXT
+        )
+        ''')
+        
         # Initialize portfolio if empty
         cursor.execute('SELECT COUNT(*) FROM portfolio')
         if cursor.fetchone()[0] == 0:
@@ -84,6 +114,126 @@ class Database:
         conn.close()
         logger.info("Database initialized successfully")
     
+    def log_bot_activity(self, level: str, component: str, message: str, 
+                        details: str = None, coin: str = None, data: Dict = None):
+        """Log bot activity for monitoring"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+            INSERT INTO bot_logs (level, component, message, details, coin, data)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ''', (
+                level,
+                component,
+                message,
+                details,
+                coin,
+                json.dumps(data) if data else None
+            ))
+            
+            conn.commit()
+            conn.close()
+            
+            # Also log to console
+            if level == 'ERROR':
+                logger.error(f"[{component}] {message} - {details}")
+            elif level == 'WARNING':
+                logger.warning(f"[{component}] {message} - {details}")
+            else:
+                logger.info(f"[{component}] {message}")
+                
+        except Exception as e:
+            logger.error(f"Failed to log bot activity: {e}")
+    
+    def log_analysis(self, coin: str, timeframe: str, analysis_type: str, result: str,
+                    confidence: float = None, indicators: Dict = None, 
+                    patterns: Dict = None, support_resistance: Dict = None):
+        """Log market analysis results"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+            INSERT INTO analysis_logs (coin, timeframe, analysis_type, result, confidence, 
+                                     indicators, patterns, support_resistance)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                coin,
+                timeframe,
+                analysis_type,
+                result,
+                confidence,
+                json.dumps(indicators) if indicators else None,
+                json.dumps(patterns) if patterns else None,
+                json.dumps(support_resistance) if support_resistance else None
+            ))
+            
+            conn.commit()
+            conn.close()
+            
+        except Exception as e:
+            logger.error(f"Failed to log analysis: {e}")
+    
+    def get_recent_logs(self, limit: int = 50) -> List[Dict]:
+        """Get recent bot activity logs"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+        SELECT * FROM bot_logs 
+        ORDER BY timestamp DESC 
+        LIMIT ?
+        ''', (limit,))
+        
+        logs = []
+        for row in cursor.fetchall():
+            log = {
+                'id': row[0],
+                'timestamp': row[1],
+                'level': row[2],
+                'component': row[3],
+                'message': row[4],
+                'details': row[5],
+                'coin': row[6],
+                'data': json.loads(row[7]) if row[7] else None
+            }
+            logs.append(log)
+        
+        conn.close()
+        return logs
+    
+    def get_analysis_summary(self, hours: int = 24) -> Dict:
+        """Get analysis summary for the last N hours"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+        SELECT 
+            coin,
+            COUNT(*) as analysis_count,
+            AVG(confidence) as avg_confidence,
+            COUNT(CASE WHEN result LIKE '%bullish%' THEN 1 END) as bullish_signals,
+            COUNT(CASE WHEN result LIKE '%bearish%' THEN 1 END) as bearish_signals
+        FROM analysis_logs 
+        WHERE timestamp >= datetime('now', '-{} hours')
+        GROUP BY coin
+        ORDER BY analysis_count DESC
+        '''.format(hours))
+        
+        summary = {}
+        for row in cursor.fetchall():
+            summary[row[0]] = {
+                'analysis_count': row[1],
+                'avg_confidence': row[2] or 0,
+                'bullish_signals': row[3],
+                'bearish_signals': row[4]
+            }
+        
+        conn.close()
+        return summary
+
     def save_signal(self, signal_data: Dict) -> bool:
         """Save a new trading signal"""
         try:
@@ -125,9 +275,21 @@ class Database:
             
             conn.commit()
             conn.close()
+            
+            # Log the signal creation
+            self.log_bot_activity(
+                'INFO', 
+                'SIGNAL_GENERATOR', 
+                f"New {signal_data['direction']} signal created",
+                f"Entry: ${signal_data['entry_price']}, Confidence: {signal_data['confidence']}%",
+                signal_data['coin'],
+                {'signal_id': signal_data['signal_id']}
+            )
+            
             logger.info(f"Signal saved: {signal_data['signal_id']}")
             return True
         except Exception as e:
+            self.log_bot_activity('ERROR', 'DATABASE', 'Failed to save signal', str(e))
             logger.error(f"Error saving signal: {e}")
             return False
     
@@ -187,13 +349,13 @@ class Database:
             
             # Get signal details for P&L calculation
             cursor.execute('''
-            SELECT direction, entry_price, take_profit, stop_loss
+            SELECT direction, entry_price, take_profit, stop_loss, coin
             FROM signals WHERE signal_id = ?
             ''', (signal_id,))
             
             signal = cursor.fetchone()
             if signal:
-                direction, entry_price, take_profit, stop_loss = signal
+                direction, entry_price, take_profit, stop_loss, coin = signal
                 
                 # Calculate P&L
                 if direction == 'LONG':
@@ -217,11 +379,22 @@ class Database:
                     max_loss = CASE WHEN ? < max_loss THEN ? ELSE max_loss END
                 WHERE signal_id = ?
                 ''', (pnl_usd, pnl_usd, pnl_usd, pnl_usd, signal_id))
+                
+                # Log price update
+                self.log_bot_activity(
+                    'DEBUG', 
+                    'PRICE_MONITOR', 
+                    f"Price updated for {coin}",
+                    f"Current: ${current_price}, P&L: ${pnl_usd:.2f}",
+                    coin,
+                    {'signal_id': signal_id, 'pnl_usd': pnl_usd}
+                )
             
             conn.commit()
             conn.close()
             return True
         except Exception as e:
+            self.log_bot_activity('ERROR', 'PRICE_MONITOR', 'Failed to update signal price', str(e))
             logger.error(f"Error updating signal price: {e}")
             return False
     
@@ -230,6 +403,10 @@ class Database:
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
+            
+            # Get signal info before closing
+            cursor.execute('SELECT coin, direction FROM signals WHERE signal_id = ?', (signal_id,))
+            signal_info = cursor.fetchone()
             
             # Update signal status
             cursor.execute('''
@@ -246,9 +423,22 @@ class Database:
             
             conn.commit()
             conn.close()
+            
+            # Log signal closure
+            if signal_info:
+                self.log_bot_activity(
+                    'INFO', 
+                    'SIGNAL_MANAGER', 
+                    f"Signal closed: {signal_info[0]} {signal_info[1]}",
+                    f"Exit: ${exit_price}, Reason: {exit_reason}",
+                    signal_info[0],
+                    {'signal_id': signal_id, 'exit_reason': exit_reason}
+                )
+            
             logger.info(f"Signal closed: {signal_id} at {exit_price}")
             return True
         except Exception as e:
+            self.log_bot_activity('ERROR', 'SIGNAL_MANAGER', 'Failed to close signal', str(e))
             logger.error(f"Error closing signal: {e}")
             return False
     

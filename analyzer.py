@@ -8,20 +8,26 @@ import logging
 from typing import Dict, List, Tuple, Optional
 import asyncio
 import json
+import os
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
 class AdvancedTradingAnalyzer:
-    def __init__(self):
+    def __init__(self, database=None):
+        # Load environment variables from .env file
+        load_dotenv()
+        
         self.exchange = ccxt.binance({
-            'apiKey': '',  
-            'secret': '',  
+            'apiKey': os.getenv('BINANCE_API_KEY'),
+            'secret': os.getenv('BINANCE_SECRET_KEY'),
             'sandbox': False,
             'rateLimit': 1200,
         })
         self.scaler = StandardScaler()
         self.ml_model = RandomForestClassifier(n_estimators=100, random_state=42)
         self.is_model_trained = False
+        self.database = database
         
         # Coins to monitor
         self.coins = [
@@ -30,16 +36,41 @@ class AdvancedTradingAnalyzer:
             'AVAX/USDT', 'LINK/USDT', 'UNI/USDT', 'LTC/USDT', 'ATOM/USDT',
             'NEAR/USDT', 'ALGO/USDT', 'MANA/USDT', 'SAND/USDT', 'FTM/USDT'
         ]
+        
+        # Log initialization
+        if self.database:
+            self.database.log_bot_activity(
+                'INFO', 'ANALYZER', 'Trading analyzer initialized',
+                f'Monitoring {len(self.coins)} coins'
+            )
     
     async def get_market_data(self, symbol: str, timeframe: str = '1h', limit: int = 200) -> pd.DataFrame:
         """Fetch market data for a symbol"""
         try:
+            if self.database:
+                self.database.log_bot_activity(
+                    'DEBUG', 'DATA_FETCHER', f'Fetching {timeframe} data for {symbol}',
+                    f'Limit: {limit} candles'
+                )
+            
             ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
+            
+            if self.database:
+                self.database.log_bot_activity(
+                    'DEBUG', 'DATA_FETCHER', f'Successfully fetched {len(df)} candles for {symbol}',
+                    f'Latest price: ${df["close"].iloc[-1]:.6f}'
+                )
+            
             return df
         except Exception as e:
+            if self.database:
+                self.database.log_bot_activity(
+                    'ERROR', 'DATA_FETCHER', f'Failed to fetch data for {symbol}',
+                    str(e), symbol
+                )
             logger.error(f"Error fetching data for {symbol}: {e}")
             return pd.DataFrame()
     
@@ -49,6 +80,12 @@ class AdvancedTradingAnalyzer:
             return df
         
         try:
+            if self.database:
+                self.database.log_bot_activity(
+                    'DEBUG', 'INDICATORS', 'Calculating technical indicators',
+                    f'Processing {len(df)} data points'
+                )
+            
             # Simple Moving Averages
             df['sma_20'] = df['close'].rolling(window=20).mean()
             df['sma_50'] = df['close'].rolling(window=50).mean()
@@ -110,8 +147,26 @@ class AdvancedTradingAnalyzer:
             df['resistance1'] = 2 * df['pivot'] - df['low']
             df['support1'] = 2 * df['pivot'] - df['high']
             
+            if self.database:
+                indicators_summary = {
+                    'rsi': df['rsi'].iloc[-1],
+                    'macd_hist': df['macd_hist'].iloc[-1],
+                    'bb_position': df['bb_position'].iloc[-1],
+                    'volume_ratio': df['volume_ratio'].iloc[-1]
+                }
+                self.database.log_bot_activity(
+                    'DEBUG', 'INDICATORS', 'Technical indicators calculated',
+                    'All indicators computed successfully',
+                    data=indicators_summary
+                )
+            
             return df.dropna()
         except Exception as e:
+            if self.database:
+                self.database.log_bot_activity(
+                    'ERROR', 'INDICATORS', 'Failed to calculate indicators',
+                    str(e)
+                )
             logger.error(f"Error calculating indicators: {e}")
             return df
     
@@ -120,6 +175,12 @@ class AdvancedTradingAnalyzer:
         try:
             if len(df) < 50:
                 return {}
+            
+            if self.database:
+                self.database.log_bot_activity(
+                    'DEBUG', 'VOLUME_ANALYZER', 'Analyzing volume profile',
+                    f'Processing {len(df)} price levels'
+                )
             
             # Create price bins
             price_min, price_max = df['low'].min(), df['high'].max()
@@ -144,14 +205,27 @@ class AdvancedTradingAnalyzer:
                 hvn_levels = [price for price, volume in volume_profile.items() 
                              if volume >= high_volume_threshold]
                 
-                return {
+                result = {
                     'vpoc_price': vpoc_price,
                     'vpoc_volume': vpoc_volume,
                     'high_volume_nodes': hvn_levels,
                     'volume_profile': volume_profile
                 }
+                
+                if self.database:
+                    self.database.log_bot_activity(
+                        'DEBUG', 'VOLUME_ANALYZER', 'Volume profile analysis completed',
+                        f'VPOC: ${vpoc_price:.6f}, HVN levels: {len(hvn_levels)}'
+                    )
+                
+                return result
             return {}
         except Exception as e:
+            if self.database:
+                self.database.log_bot_activity(
+                    'ERROR', 'VOLUME_ANALYZER', 'Volume profile analysis failed',
+                    str(e)
+                )
             logger.error(f"Error in volume profile analysis: {e}")
             return {}
     
@@ -160,6 +234,12 @@ class AdvancedTradingAnalyzer:
         try:
             if len(df) < 20:
                 return {}
+            
+            if self.database:
+                self.database.log_bot_activity(
+                    'DEBUG', 'PATTERN_DETECTOR', 'Analyzing chart patterns',
+                    f'Scanning {len(df)} candles for patterns'
+                )
             
             patterns = {}
             
@@ -188,8 +268,24 @@ class AdvancedTradingAnalyzer:
                 elif price_trend < 0 and rsi_trend > 0:
                     patterns['bullish_divergence'] = True
             
+            if self.database:
+                pattern_summary = []
+                for pattern, value in patterns.items():
+                    if value:
+                        pattern_summary.append(pattern)
+                
+                self.database.log_bot_activity(
+                    'DEBUG', 'PATTERN_DETECTOR', 'Pattern detection completed',
+                    f'Detected patterns: {", ".join(pattern_summary) if pattern_summary else "None"}'
+                )
+            
             return patterns
         except Exception as e:
+            if self.database:
+                self.database.log_bot_activity(
+                    'ERROR', 'PATTERN_DETECTOR', 'Pattern detection failed',
+                    str(e)
+                )
             logger.error(f"Error detecting patterns: {e}")
             return {}
     
@@ -198,6 +294,12 @@ class AdvancedTradingAnalyzer:
         try:
             if len(df) < 20:
                 return {}
+            
+            if self.database:
+                self.database.log_bot_activity(
+                    'DEBUG', 'SUPPORT_RESISTANCE', 'Calculating S/R levels',
+                    'Finding pivot points and key levels'
+                )
             
             # Find pivot points
             highs = df['high'].rolling(window=5, center=True).max()
@@ -212,13 +314,29 @@ class AdvancedTradingAnalyzer:
             resistance_levels = pivot_highs[pivot_highs > current_price].sort_values()
             support_levels = pivot_lows[pivot_lows < current_price].sort_values(ascending=False)
             
-            return {
+            result = {
                 'immediate_resistance': resistance_levels.iloc[0] if len(resistance_levels) > 0 else None,
                 'immediate_support': support_levels.iloc[0] if len(support_levels) > 0 else None,
                 'all_resistance': resistance_levels.head(3).tolist(),
                 'all_support': support_levels.head(3).tolist()
             }
+            
+            if self.database:
+                support_str = f"${result['immediate_support']:.6f}" if result['immediate_support'] else "None"
+                resistance_str = f"${result['immediate_resistance']:.6f}" if result['immediate_resistance'] else "None"
+                
+                self.database.log_bot_activity(
+                    'DEBUG', 'SUPPORT_RESISTANCE', 'S/R levels calculated',
+                    f'Support: {support_str}, Resistance: {resistance_str}'
+                )
+            
+            return result
         except Exception as e:
+            if self.database:
+                self.database.log_bot_activity(
+                    'ERROR', 'SUPPORT_RESISTANCE', 'S/R calculation failed',
+                    str(e)
+                )
             logger.error(f"Error calculating support/resistance: {e}")
             return {}
     
@@ -229,6 +347,13 @@ class AdvancedTradingAnalyzer:
                 return None
             
             current_price = df['close'].iloc[-1]
+            coin = symbol.replace('/USDT', '')
+            
+            if self.database:
+                self.database.log_bot_activity(
+                    'INFO', 'SIGNAL_ANALYZER', f'Analyzing {coin} for signals',
+                    f'Current price: ${current_price:.6f}', coin
+                )
             
             # Get analysis components
             volume_analysis = self.analyze_volume_profile(df)
@@ -304,17 +429,64 @@ class AdvancedTradingAnalyzer:
             elif patterns.get('downtrend'):
                 short_score += 1
             
+            # Log analysis results
+            if self.database:
+                analysis_result = f"Long score: {long_score}, Short score: {short_score}"
+                self.database.log_analysis(
+                    coin, '1h', 'SIGNAL_GENERATION', analysis_result,
+                    max(long_score, short_score) * 10,
+                    {
+                        'rsi': df['rsi'].iloc[-1],
+                        'macd_hist': df['macd_hist'].iloc[-1],
+                        'bb_position': df['bb_position'].iloc[-1],
+                        'volume_ratio': df['volume_ratio'].iloc[-1]
+                    },
+                    patterns,
+                    levels
+                )
+                
+                self.database.log_bot_activity(
+                    'INFO', 'SIGNAL_ANALYZER', f'{coin} analysis completed',
+                    f'Long: {long_score}, Short: {short_score}, Factors: {len(confidence_factors)}',
+                    coin
+                )
+            
             # Generate signal if confidence is high enough
             min_score = 4  # Minimum score to generate signal
             
             if long_score >= min_score and long_score > short_score:
-                return self.create_long_signal(df, symbol, long_score, confidence_factors, levels)
+                signal = self.create_long_signal(df, symbol, long_score, confidence_factors, levels)
+                if self.database:
+                    self.database.log_bot_activity(
+                        'INFO', 'SIGNAL_GENERATOR', f'LONG signal generated for {coin}',
+                        f'Confidence: {signal["confidence"]}%, Entry: ${signal["entry_price"]}',
+                        coin
+                    )
+                return signal
             elif short_score >= min_score and short_score > long_score:
-                return self.create_short_signal(df, symbol, short_score, confidence_factors, levels)
+                signal = self.create_short_signal(df, symbol, short_score, confidence_factors, levels)
+                if self.database:
+                    self.database.log_bot_activity(
+                        'INFO', 'SIGNAL_GENERATOR', f'SHORT signal generated for {coin}',
+                        f'Confidence: {signal["confidence"]}%, Entry: ${signal["entry_price"]}',
+                        coin
+                    )
+                return signal
+            else:
+                if self.database:
+                    self.database.log_bot_activity(
+                        'DEBUG', 'SIGNAL_ANALYZER', f'No signal for {coin}',
+                        f'Insufficient confidence (min: {min_score})', coin
+                    )
             
             return None
             
         except Exception as e:
+            if self.database:
+                self.database.log_bot_activity(
+                    'ERROR', 'SIGNAL_ANALYZER', f'Signal generation failed for {symbol}',
+                    str(e), symbol.replace('/USDT', '')
+                )
             logger.error(f"Error generating signal for {symbol}: {e}")
             return None
     
@@ -426,13 +598,30 @@ class AdvancedTradingAnalyzer:
         """Scan all coins for trading opportunities"""
         signals = []
         
-        for symbol in self.coins:
+        if self.database:
+            self.database.log_bot_activity(
+                'INFO', 'MARKET_SCANNER', f'Starting market scan',
+                f'Scanning {len(self.coins)} coins for opportunities'
+            )
+        
+        for i, symbol in enumerate(self.coins):
             try:
+                if self.database:
+                    self.database.log_bot_activity(
+                        'DEBUG', 'MARKET_SCANNER', f'Scanning {symbol} ({i+1}/{len(self.coins)})',
+                        'Fetching market data and analyzing'
+                    )
+                
                 # Fetch data for multiple timeframes
                 df_1h = await self.get_market_data(symbol, '1h', 200)
                 df_4h = await self.get_market_data(symbol, '4h', 100)
                 
                 if df_1h.empty or df_4h.empty:
+                    if self.database:
+                        self.database.log_bot_activity(
+                            'WARNING', 'MARKET_SCANNER', f'No data available for {symbol}',
+                            'Skipping to next coin'
+                        )
                     continue
                 
                 # Calculate indicators
@@ -440,6 +629,11 @@ class AdvancedTradingAnalyzer:
                 df_4h = self.calculate_technical_indicators(df_4h)
                 
                 if len(df_1h) < 50:
+                    if self.database:
+                        self.database.log_bot_activity(
+                            'WARNING', 'MARKET_SCANNER', f'Insufficient data for {symbol}',
+                            f'Only {len(df_1h)} candles available'
+                        )
                     continue
                 
                 # Generate signal (using 1h timeframe for entries, 4h for trend confirmation)
@@ -450,14 +644,35 @@ class AdvancedTradingAnalyzer:
                     h4_trend = self.get_trend_confirmation(df_4h)
                     if self.is_signal_confirmed(signal, h4_trend):
                         signals.append(signal)
-                        logger.info(f"Signal generated for {symbol}: {signal['direction']}")
+                        if self.database:
+                            self.database.log_bot_activity(
+                                'INFO', 'MARKET_SCANNER', f'Signal confirmed for {symbol}',
+                                f'{signal["direction"]} with {signal["confidence"]}% confidence'
+                            )
+                    else:
+                        if self.database:
+                            self.database.log_bot_activity(
+                                'INFO', 'MARKET_SCANNER', f'Signal rejected for {symbol}',
+                                f'{signal["direction"]} signal conflicts with {h4_trend} H4 trend'
+                            )
                 
                 # Small delay to respect rate limits
                 await asyncio.sleep(0.5)
                 
             except Exception as e:
+                if self.database:
+                    self.database.log_bot_activity(
+                        'ERROR', 'MARKET_SCANNER', f'Error scanning {symbol}',
+                        str(e), symbol.replace('/USDT', '')
+                    )
                 logger.error(f"Error scanning {symbol}: {e}")
                 continue
+        
+        if self.database:
+            self.database.log_bot_activity(
+                'INFO', 'MARKET_SCANNER', 'Market scan completed',
+                f'Generated {len(signals)} signals from {len(self.coins)} coins scanned'
+            )
         
         return signals
     
@@ -491,5 +706,10 @@ class AdvancedTradingAnalyzer:
             ticker = self.exchange.fetch_ticker(f"{symbol}/USDT")
             return ticker['last']
         except Exception as e:
+            if self.database:
+                self.database.log_bot_activity(
+                    'ERROR', 'PRICE_FETCHER', f'Failed to get price for {symbol}',
+                    str(e), symbol
+                )
             logger.error(f"Error fetching price for {symbol}: {e}")
             return 0.0
