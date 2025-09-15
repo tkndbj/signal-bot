@@ -1,37 +1,3 @@
-#!/usr/bin/env python3
-"""
-Professional Crypto Trading Bot with Enhanced Logging and Monitoring
-"""
-
-import asyncio
-import json
-import logging
-import os
-import psutil
-import time
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
-
-import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse
-
-# Import our enhanced modules
-from database import Database
-from trading_analyzer import AdvancedTradingAnalyzer
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('bot.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
-
 class TradingBot:
     def __init__(self):
         self.database = Database()
@@ -39,9 +5,11 @@ class TradingBot:
         self.app = FastAPI(title="Crypto Trading Bot", version="2.1.0")
         self.websocket_connections = set()
         self.running = False
-        self.scan_interval = 300  # 5 minutes
+        self.scan_interval = 900  # Changed from 300 to 900 (15 minutes)
         self.last_scan_time = None
         self.scan_count = 0
+        self.max_signals_per_scan = 3  # Add limit to prevent spam
+        self.signal_cooldown = {}  # Track last signal time per coin
         
         # Setup FastAPI routes
         self.setup_routes()
@@ -52,152 +20,8 @@ class TradingBot:
             f'Monitoring {len(self.analyzer.coins)} coins, scan interval: {self.scan_interval}s'
         )
     
-    def setup_routes(self):
-        """Setup FastAPI routes"""
-        
-        @self.app.get("/")
-        async def dashboard():
-            """Serve the main dashboard"""
-            with open("templates/dashboard.html", "r") as f:
-                return HTMLResponse(content=f.read())
-        
-        @self.app.websocket("/ws")
-        async def websocket_endpoint(websocket: WebSocket):
-            """WebSocket endpoint for real-time updates"""
-            await websocket.accept()
-            self.websocket_connections.add(websocket)
-            
-            self.database.log_bot_activity(
-                'DEBUG', 'WEBSOCKET', 'New client connected',
-                f'Total connections: {len(self.websocket_connections)}'
-            )
-            
-            try:
-                while True:
-                    await websocket.receive_text()  # Keep connection alive
-            except WebSocketDisconnect:
-                self.websocket_connections.remove(websocket)
-                self.database.log_bot_activity(
-                    'DEBUG', 'WEBSOCKET', 'Client disconnected',
-                    f'Remaining connections: {len(self.websocket_connections)}'
-                )
-        
-        @self.app.get("/api/signals")
-        async def get_signals():
-            """Get active trading signals"""
-            try:
-                signals = self.database.get_active_signals()
-                
-                # Update current prices for active signals
-                for signal in signals:
-                    try:
-                        current_price = await self.analyzer.get_current_price(signal['coin'])
-                        if current_price > 0:
-                            self.database.update_signal_price(signal['signal_id'], current_price)
-                            signal['current_price'] = current_price
-                    except Exception as e:
-                        logger.error(f"Error updating price for {signal['coin']}: {e}")
-                
-                return JSONResponse(content={"signals": signals})
-            except Exception as e:
-                logger.error(f"Error getting signals: {e}")
-                return JSONResponse(content={"error": str(e)}, status_code=500)
-        
-        @self.app.get("/api/portfolio")
-        async def get_portfolio():
-            """Get portfolio statistics"""
-            try:
-                portfolio = self.database.get_portfolio_stats()
-                return JSONResponse(content={"portfolio": portfolio})
-            except Exception as e:
-                logger.error(f"Error getting portfolio: {e}")
-                return JSONResponse(content={"error": str(e)}, status_code=500)
-        
-        @self.app.get("/api/logs")
-        async def get_logs():
-            """Get recent bot logs and analysis summary"""
-            try:
-                logs = self.database.get_recent_logs(50)
-                analysis_summary = self.database.get_analysis_summary(24)
-                
-                return JSONResponse(content={
-                    "logs": logs,
-                    "analysis_summary": analysis_summary
-                })
-            except Exception as e:
-                logger.error(f"Error getting logs: {e}")
-                return JSONResponse(content={"error": str(e)}, status_code=500)
-        
-        @self.app.get("/api/chart/{symbol}")
-        async def get_chart_data(symbol: str):
-            """Get chart data for a symbol"""
-            try:
-                df = await self.analyzer.get_market_data(f"{symbol}/USDT", "1h", 100)
-                
-                if df.empty:
-                    return JSONResponse(content={"error": "No data available"})
-                
-                df = self.analyzer.calculate_technical_indicators(df)
-                
-                chart_data = {
-                    "timestamps": [t.isoformat() for t in df.index],
-                    "prices": {
-                        "open": df['open'].tolist(),
-                        "high": df['high'].tolist(),
-                        "low": df['low'].tolist(),
-                        "close": df['close'].tolist()
-                    },
-                    "volume": df['volume'].tolist(),
-                    "indicators": {
-                        "rsi": df['rsi'].tolist(),
-                        "macd": df['macd'].tolist(),
-                        "bb_upper": df['bb_upper'].tolist(),
-                        "bb_lower": df['bb_lower'].tolist()
-                    }
-                }
-                
-                return JSONResponse(content=chart_data)
-            except Exception as e:
-                logger.error(f"Error getting chart data for {symbol}: {e}")
-                return JSONResponse(content={"error": str(e)}, status_code=500)
-        
-        @self.app.get("/api/system")
-        async def get_system_stats():
-            """Get system performance statistics"""
-            try:
-                cpu_percent = psutil.cpu_percent(interval=1)
-                memory = psutil.virtual_memory()
-                
-                return JSONResponse(content={
-                    "cpu_usage": cpu_percent,
-                    "memory_usage": memory.percent,
-                    "uptime": time.time() - psutil.boot_time(),
-                    "scan_count": self.scan_count,
-                    "last_scan": self.last_scan_time.isoformat() if self.last_scan_time else None,
-                    "active_connections": len(self.websocket_connections)
-                })
-            except Exception as e:
-                logger.error(f"Error getting system stats: {e}")
-                return JSONResponse(content={"error": str(e)}, status_code=500)
-    
-    async def broadcast_to_clients(self, message: Dict):
-        """Broadcast message to all connected WebSocket clients"""
-        if not self.websocket_connections:
-            return
-        
-        disconnected = set()
-        for websocket in self.websocket_connections:
-            try:
-                await websocket.send_text(json.dumps(message))
-            except Exception as e:
-                logger.error(f"Error broadcasting to client: {e}")
-                disconnected.add(websocket)
-        
-        # Remove disconnected clients
-        self.websocket_connections -= disconnected
-    
     async def market_scan_cycle(self):
-        """Main market scanning cycle"""
+        """Main market scanning cycle with SIGNAL LIMITING"""
         while self.running:
             try:
                 self.database.log_bot_activity(
@@ -208,8 +32,38 @@ class TradingBot:
                 # Scan all coins for signals
                 signals = await self.analyzer.scan_all_coins()
                 
-                # Process new signals
+                # Sort signals by confidence
+                signals.sort(key=lambda x: x['confidence'], reverse=True)
+                
+                # Apply limits and cooldowns
+                processed_signals = []
                 for signal in signals:
+                    # Check cooldown (don't generate same coin signal within 1 hour)
+                    coin = signal['coin']
+                    last_signal_time = self.signal_cooldown.get(coin, 0)
+                    current_time = time.time()
+                    
+                    if current_time - last_signal_time < 3600:  # 1 hour cooldown
+                        self.database.log_bot_activity(
+                            'INFO', 'SIGNAL_FILTER', f'Signal for {coin} filtered (cooldown)',
+                            f'Last signal was {int((current_time - last_signal_time)/60)} minutes ago'
+                        )
+                        continue
+                    
+                    # Check if we haven't exceeded max signals
+                    if len(processed_signals) >= self.max_signals_per_scan:
+                        self.database.log_bot_activity(
+                            'INFO', 'SIGNAL_FILTER', f'Max signals reached ({self.max_signals_per_scan})',
+                            f'Skipping remaining {len(signals) - len(processed_signals)} signals'
+                        )
+                        break
+                    
+                    # Add to processed signals
+                    processed_signals.append(signal)
+                    self.signal_cooldown[coin] = current_time
+                
+                # Process filtered signals
+                for signal in processed_signals:
                     success = self.database.save_signal(signal)
                     if success:
                         # Broadcast new signal to clients
@@ -233,14 +87,14 @@ class TradingBot:
                 
                 self.database.log_bot_activity(
                     'INFO', 'MARKET_SCANNER', 'Market scan completed',
-                    f'Found {len(signals)} new signals. Total scans: {self.scan_count}'
+                    f'Found {len(processed_signals)} valid signals from {len(signals)} potential. Total scans: {self.scan_count}'
                 )
                 
                 # Broadcast update to clients
                 await self.broadcast_to_clients({
                     "type": "scan_completed",
                     "scan_count": self.scan_count,
-                    "signals_found": len(signals)
+                    "signals_found": len(processed_signals)
                 })
                 
             except Exception as e:
@@ -254,7 +108,7 @@ class TradingBot:
             await asyncio.sleep(self.scan_interval)
     
     async def check_signal_exits(self):
-        """Check active signals for exit conditions"""
+        """Check active signals for exit conditions with PROPER PRICE TRACKING"""
         try:
             active_signals = self.database.get_active_signals()
             
@@ -268,43 +122,69 @@ class TradingBot:
             
             for signal in active_signals:
                 try:
+                    # Get FRESH price data
                     current_price = await self.analyzer.get_current_price(signal['coin'])
                     if current_price <= 0:
                         continue
                     
-                    # Update current price
+                    # Update current price in database
                     self.database.update_signal_price(signal['signal_id'], current_price)
                     
-                    # Check exit conditions
+                    # Calculate actual P&L
+                    entry_price = signal['entry_price']
+                    
+                    # Check exit conditions based on ACTUAL prices
                     exit_reason = None
                     
                     if signal['direction'] == 'LONG':
+                        # For LONG: profit when price goes UP
+                        actual_pnl_percent = ((current_price - entry_price) / entry_price) * 100
+                        
                         if current_price >= signal['take_profit']:
                             exit_reason = "Take Profit Hit"
                         elif current_price <= signal['stop_loss']:
                             exit_reason = "Stop Loss Hit"
+                        elif actual_pnl_percent >= 5.0:  # Take partial profit at 5% (50% with 10x)
+                            exit_reason = "Partial TP (5% move)"
                     else:  # SHORT
+                        # For SHORT: profit when price goes DOWN
+                        actual_pnl_percent = ((entry_price - current_price) / entry_price) * 100
+                        
                         if current_price <= signal['take_profit']:
                             exit_reason = "Take Profit Hit"
                         elif current_price >= signal['stop_loss']:
                             exit_reason = "Stop Loss Hit"
+                        elif actual_pnl_percent >= 5.0:  # Take partial profit at 5%
+                            exit_reason = "Partial TP (5% move)"
+                    
+                    # Check time-based exit (close after 24 hours)
+                    signal_age = (datetime.now() - datetime.fromisoformat(signal['created_at'])).total_seconds()
+                    if signal_age > 86400:  # 24 hours
+                        exit_reason = "Time limit (24h)"
                     
                     # Close signal if exit condition met
                     if exit_reason:
                         success = self.database.close_signal(signal['signal_id'], current_price, exit_reason)
                         
                         if success:
+                            # Calculate final P&L for broadcast
+                            if signal['direction'] == 'LONG':
+                                final_pnl = ((current_price - entry_price) / entry_price) * 100 * 10
+                            else:
+                                final_pnl = ((entry_price - current_price) / entry_price) * 100 * 10
+                            
                             # Broadcast signal closure
                             await self.broadcast_to_clients({
                                 "type": "signal_closed",
                                 "signal_id": signal['signal_id'],
                                 "exit_price": current_price,
-                                "exit_reason": exit_reason
+                                "exit_reason": exit_reason,
+                                "pnl_percent": round(final_pnl, 2)
                             })
                             
                             self.database.log_bot_activity(
                                 'INFO', 'SIGNAL_MONITOR', f'Signal closed: {signal["coin"]} {signal["direction"]}',
-                                f'Exit: ${current_price}, Reason: {exit_reason}',
+                                f'Exit: ${current_price}, Reason: {exit_reason}, P&L: {final_pnl:.2f}%',
                                 signal['coin']
                             )
                 
@@ -321,88 +201,3 @@ class TradingBot:
                 str(e)
             )
             logger.error(f"Error checking signal exits: {e}")
-    
-    async def periodic_maintenance(self):
-        """Periodic maintenance tasks"""
-        while self.running:
-            try:
-                # Clean old logs (keep last 1000 entries)
-                self.database.log_bot_activity(
-                    'DEBUG', 'MAINTENANCE', 'Running periodic maintenance',
-                    'Cleaning old logs and optimizing database'
-                )
-                
-                # Add any maintenance tasks here
-                
-                await asyncio.sleep(3600)  # Run every hour
-                
-            except Exception as e:
-                logger.error(f"Error in maintenance cycle: {e}")
-                await asyncio.sleep(3600)
-    
-    async def start_bot(self):
-        """Start the trading bot"""
-        self.running = True
-        
-        self.database.log_bot_activity(
-            'INFO', 'SYSTEM', 'Trading bot starting up',
-            f'Scan interval: {self.scan_interval}s, Monitoring: {len(self.analyzer.coins)} coins'
-        )
-        
-        # Start background tasks
-        tasks = [
-            asyncio.create_task(self.market_scan_cycle()),
-            asyncio.create_task(self.periodic_maintenance())
-        ]
-        
-        logger.info("Trading bot started successfully")
-        
-        try:
-            await asyncio.gather(*tasks)
-        except Exception as e:
-            logger.error(f"Error in bot main loop: {e}")
-            self.database.log_bot_activity('ERROR', 'SYSTEM', 'Bot crashed', str(e))
-        finally:
-            self.running = False
-    
-    def stop_bot(self):
-        """Stop the trading bot"""
-        self.running = False
-        self.database.log_bot_activity('INFO', 'SYSTEM', 'Trading bot shutting down', 'Graceful shutdown initiated')
-        logger.info("Trading bot stopped")
-
-# Global bot instance
-bot = TradingBot()
-
-# FastAPI app for uvicorn
-app = bot.app
-
-@app.on_event("startup")
-async def startup_event():
-    """Start bot when server starts"""
-    asyncio.create_task(bot.start_bot())
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Stop bot when server shuts down"""
-    bot.stop_bot()
-
-if __name__ == "__main__":
-    try:
-        # Create data directory if it doesn't exist
-        os.makedirs("data", exist_ok=True)
-        
-        # Start the server
-        uvicorn.run(
-            "app:app",
-            host="0.0.0.0",
-            port=8000,
-            reload=False,
-            log_level="info"
-        )
-    except KeyboardInterrupt:
-        print("\nShutting down gracefully...")
-        bot.stop_bot()
-    except Exception as e:
-        print(f"Failed to start bot: {e}")
-        logger.error(f"Failed to start bot: {e}")
