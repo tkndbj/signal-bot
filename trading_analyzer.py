@@ -2,8 +2,6 @@ import ccxt
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import StandardScaler
 import logging
 from typing import Dict, List, Tuple, Optional
 import asyncio
@@ -18,62 +16,100 @@ class AdvancedTradingAnalyzer:
         # Load environment variables
         load_dotenv()
         
-        self.exchange = ccxt.binance({
-            'apiKey': os.getenv('BINANCE_API_KEY'),
-            'secret': os.getenv('BINANCE_SECRET_KEY'),
-            'sandbox': False,
-            'rateLimit': 1200,
-            'enableRateLimit': True
-        })
+        # Initialize exchange with proper error handling
+        try:
+            self.exchange = ccxt.binance({
+                'apiKey': os.getenv('BINANCE_API_KEY', ''),
+                'secret': os.getenv('BINANCE_SECRET_KEY', ''),
+                'sandbox': False,
+                'rateLimit': 1200,
+                'enableRateLimit': True,
+                'options': {
+                    'defaultType': 'spot'
+                }
+            })
+            # Test connection
+            self.exchange.load_markets()
+            logger.info("Connected to Binance exchange successfully")
+        except Exception as e:
+            logger.error(f"Failed to connect to Binance: {e}")
+            # Initialize without API keys for testing
+            self.exchange = ccxt.binance({
+                'rateLimit': 1200,
+                'enableRateLimit': True,
+                'sandbox': False
+            })
         
-        self.scaler = StandardScaler()
-        self.ml_model = RandomForestClassifier(n_estimators=100, random_state=42)
-        self.is_model_trained = False
         self.database = database
         
-        # Coins to monitor
+        # Carefully selected coins with good liquidity and volume
         self.coins = [
             'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT',
-            'SOL/USDT', 'DOGE/USDT', 'DOT/USDT', 'MATIC/USDT', 'SHIB/USDT',
-            'AVAX/USDT', 'LINK/USDT', 'UNI/USDT', 'LTC/USDT', 'ATOM/USDT',
-            'NEAR/USDT', 'ALGO/USDT', 'MANA/USDT', 'SAND/USDT', 'FTM/USDT'
+            'SOL/USDT', 'DOGE/USDT', 'DOT/USDT', 'MATIC/USDT', 'LINK/USDT',
+            'AVAX/USDT', 'UNI/USDT', 'LTC/USDT', 'ATOM/USDT', 'NEAR/USDT'
         ]
         
-        # Signal generation thresholds
-        self.min_confidence_score = 5  # Minimum score to generate signal
-        self.min_risk_reward_ratio = 2.0  # Minimum R:R ratio
-        self.max_signals_per_coin = 1  # Max active signals per coin
+        # Enhanced signal generation parameters
+        self.min_confidence_score = 7  # Increased minimum score (out of 10)
+        self.min_risk_reward_ratio = 2.0  # Minimum 2:1 R:R ratio
+        self.max_signals_per_scan = 3  # Maximum signals per scan cycle
+        self.volume_threshold = 2.0  # Minimum volume ratio
+        self.volatility_threshold = 0.02  # Minimum volatility for signals
         
-        # Log initialization
+        # Rate limiting
+        self.last_request_time = {}
+        self.min_request_interval = 0.5  # 500ms between requests per symbol
+        
         if self.database:
             self.database.log_bot_activity(
                 'INFO', 'ANALYZER', 'Trading analyzer initialized',
-                f'Monitoring {len(self.coins)} coins'
+                f'Monitoring {len(self.coins)} coins with strict criteria'
             )
     
     async def get_market_data(self, symbol: str, timeframe: str = '1h', limit: int = 200) -> pd.DataFrame:
-        """Fetch market data for a symbol with rate limiting"""
+        """Fetch market data with enhanced error handling and rate limiting"""
         try:
-            # Rate limiting
-            await asyncio.sleep(0.1)
+            # Rate limiting per symbol
+            now = datetime.now().timestamp()
+            if symbol in self.last_request_time:
+                time_since_last = now - self.last_request_time[symbol]
+                if time_since_last < self.min_request_interval:
+                    await asyncio.sleep(self.min_request_interval - time_since_last)
             
+            self.last_request_time[symbol] = now
+            
+            # Fetch OHLCV data
             ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            
+            if not ohlcv or len(ohlcv) < 100:
+                logger.warning(f"Insufficient data for {symbol}: {len(ohlcv) if ohlcv else 0} candles")
+                return pd.DataFrame()
+            
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
             
+            # Validate data quality
+            if df['volume'].sum() == 0:
+                logger.warning(f"No volume data for {symbol}")
+                return pd.DataFrame()
+            
             return df
+            
         except Exception as e:
             logger.error(f"Error fetching data for {symbol}: {e}")
             return pd.DataFrame()
     
     def calculate_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate comprehensive technical indicators"""
-        if df.empty or len(df) < 50:
+        """Calculate comprehensive technical indicators with validation"""
+        if df.empty or len(df) < 100:
             return df
         
         try:
-            # Price-based indicators
+            # Ensure we have clean data
+            df = df.dropna()
+            
+            # Moving averages
             df['sma_20'] = df['close'].rolling(window=20).mean()
             df['sma_50'] = df['close'].rolling(window=50).mean()
             df['ema_12'] = df['close'].ewm(span=12, adjust=False).mean()
@@ -84,11 +120,11 @@ class AdvancedTradingAnalyzer:
             df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
             df['macd_hist'] = df['macd'] - df['macd_signal']
             
-            # RSI
+            # RSI with proper calculation
             delta = df['close'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            rs = gain / (loss + 1e-10)  # Avoid division by zero
+            rs = gain / (loss + 1e-10)
             df['rsi'] = 100 - (100 / (1 + rs))
             
             # Bollinger Bands
@@ -96,14 +132,14 @@ class AdvancedTradingAnalyzer:
             bb_std = df['close'].rolling(window=20).std()
             df['bb_upper'] = df['bb_middle'] + (bb_std * 2)
             df['bb_lower'] = df['bb_middle'] - (bb_std * 2)
-            df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / (df['bb_middle'] + 1e-10)
-            df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'] + 1e-10)
+            df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']
+            df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
             
-            # Volume indicators
+            # Volume analysis
             df['volume_sma'] = df['volume'].rolling(window=20).mean()
-            df['volume_ratio'] = df['volume'] / (df['volume_sma'] + 1e-10)
+            df['volume_ratio'] = df['volume'] / df['volume_sma']
             
-            # ATR (Average True Range)
+            # ATR for volatility
             high_low = df['high'] - df['low']
             high_close = np.abs(df['high'] - df['close'].shift())
             low_close = np.abs(df['low'] - df['close'].shift())
@@ -115,20 +151,19 @@ class AdvancedTradingAnalyzer:
             # Stochastic Oscillator
             lowest_low = df['low'].rolling(window=14).min()
             highest_high = df['high'].rolling(window=14).max()
-            df['stoch_k'] = 100 * ((df['close'] - lowest_low) / (highest_high - lowest_low + 1e-10))
+            df['stoch_k'] = 100 * ((df['close'] - lowest_low) / (highest_high - lowest_low))
             df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
             
-            # Momentum indicators
-            df['momentum'] = df['close'].pct_change(periods=10) * 100
-            df['roc'] = df['close'].pct_change(periods=10) * 100
+            # Momentum and volatility
+            df['price_change'] = df['close'].pct_change(periods=1)
+            df['volatility'] = df['price_change'].rolling(20).std() * np.sqrt(252)
             
-            # Volatility
-            df['volatility'] = df['close'].pct_change().rolling(20).std() * np.sqrt(252)
-            
-            # Support and Resistance
-            df['pivot'] = (df['high'] + df['low'] + df['close']) / 3
-            df['resistance1'] = 2 * df['pivot'] - df['low']
-            df['support1'] = 2 * df['pivot'] - df['high']
+            # Support and resistance levels
+            window = 10
+            df['local_high'] = df['high'].rolling(window=window, center=True).max()
+            df['local_low'] = df['low'].rolling(window=window, center=True).min()
+            df['is_resistance'] = df['high'] == df['local_high']
+            df['is_support'] = df['low'] == df['local_low']
             
             return df.dropna()
             
@@ -136,244 +171,242 @@ class AdvancedTradingAnalyzer:
             logger.error(f"Error calculating indicators: {e}")
             return df
     
-    def detect_patterns(self, df: pd.DataFrame) -> Dict:
-        """Enhanced pattern detection"""
+    def analyze_order_book_pressure(self, symbol: str) -> Dict:
+        """Analyze order book for supply/demand pressure"""
         try:
-            if len(df) < 20:
+            # Get order book
+            order_book = self.exchange.fetch_order_book(symbol, limit=20)
+            
+            bids = np.array(order_book['bids'])
+            asks = np.array(order_book['asks'])
+            
+            if len(bids) == 0 or len(asks) == 0:
                 return {}
             
-            patterns = {}
+            # Calculate bid/ask pressure
+            bid_volume = np.sum(bids[:, 1])
+            ask_volume = np.sum(asks[:, 1])
+            total_volume = bid_volume + ask_volume
             
-            # Trend detection
-            sma_20 = df['sma_20'].iloc[-1]
-            sma_50 = df['sma_50'].iloc[-1]
-            current_price = df['close'].iloc[-1]
-            
-            if current_price > sma_20 > sma_50:
-                patterns['trend'] = 'strong_bullish'
-            elif current_price > sma_20:
-                patterns['trend'] = 'bullish'
-            elif current_price < sma_20 < sma_50:
-                patterns['trend'] = 'strong_bearish'
-            elif current_price < sma_20:
-                patterns['trend'] = 'bearish'
-            else:
-                patterns['trend'] = 'neutral'
-            
-            # Divergence detection
-            if len(df) >= 20:
-                price_trend = (df['close'].iloc[-1] - df['close'].iloc[-20]) / df['close'].iloc[-20]
-                rsi_trend = df['rsi'].iloc[-1] - df['rsi'].iloc[-20]
-                
-                if price_trend > 0.02 and rsi_trend < -5:
-                    patterns['divergence'] = 'bearish'
-                elif price_trend < -0.02 and rsi_trend > 5:
-                    patterns['divergence'] = 'bullish'
-            
-            # Momentum patterns
-            macd_hist = df['macd_hist'].iloc[-3:].values
-            if len(macd_hist) == 3:
-                if macd_hist[-1] > macd_hist[-2] > macd_hist[-3]:
-                    patterns['momentum'] = 'increasing_bullish'
-                elif macd_hist[-1] < macd_hist[-2] < macd_hist[-3]:
-                    patterns['momentum'] = 'increasing_bearish'
-            
-            return patterns
-            
-        except Exception as e:
-            logger.error(f"Error detecting patterns: {e}")
-            return {}
-    
-    def calculate_support_resistance(self, df: pd.DataFrame) -> Dict:
-        """Calculate dynamic support and resistance levels"""
-        try:
-            if len(df) < 20:
+            if total_volume == 0:
                 return {}
             
-            # Find local highs and lows
-            window = 5
-            df_copy = df.copy()
-            df_copy['high_rolling'] = df_copy['high'].rolling(window=window, center=True).max()
-            df_copy['low_rolling'] = df_copy['low'].rolling(window=window, center=True).min()
+            bid_pressure = bid_volume / total_volume
+            ask_pressure = ask_volume / total_volume
             
-            # Identify pivot points
-            pivot_highs = df_copy[df_copy['high'] == df_copy['high_rolling']]['high']
-            pivot_lows = df_copy[df_copy['low'] == df_copy['low_rolling']]['low']
+            # Calculate spread
+            best_bid = bids[0][0]
+            best_ask = asks[0][0]
+            spread_pct = ((best_ask - best_bid) / best_ask) * 100
             
-            current_price = df['close'].iloc[-1]
+            # Analyze volume at key levels
+            mid_price = (best_bid + best_ask) / 2
+            significant_bid_levels = []
+            significant_ask_levels = []
             
-            # Find nearest levels
-            resistance_levels = pivot_highs[pivot_highs > current_price].sort_values()
-            support_levels = pivot_lows[pivot_lows < current_price].sort_values(ascending=False)
+            for bid in bids:
+                if bid[1] > bid_volume * 0.1:  # More than 10% of total bid volume
+                    significant_bid_levels.append(bid[0])
             
-            # Calculate strength of levels based on touches
-            def calculate_level_strength(level, df, tolerance=0.002):
-                touches = 0
-                for _, row in df.iterrows():
-                    if abs(row['high'] - level) / level < tolerance or \
-                       abs(row['low'] - level) / level < tolerance or \
-                       abs(row['close'] - level) / level < tolerance:
-                        touches += 1
-                return touches
+            for ask in asks:
+                if ask[1] > ask_volume * 0.1:  # More than 10% of total ask volume
+                    significant_ask_levels.append(ask[0])
             
-            result = {
-                'current_price': current_price,
-                'immediate_resistance': resistance_levels.iloc[0] if len(resistance_levels) > 0 else current_price * 1.05,
-                'immediate_support': support_levels.iloc[0] if len(support_levels) > 0 else current_price * 0.95,
-                'strong_resistance': resistance_levels.iloc[1] if len(resistance_levels) > 1 else current_price * 1.10,
-                'strong_support': support_levels.iloc[1] if len(support_levels) > 1 else current_price * 0.90
+            return {
+                'bid_pressure': bid_pressure,
+                'ask_pressure': ask_pressure,
+                'spread_percentage': spread_pct,
+                'significant_support': significant_bid_levels,
+                'significant_resistance': significant_ask_levels,
+                'liquidity_ratio': min(bid_volume, ask_volume) / max(bid_volume, ask_volume)
             }
             
-            return result
-            
         except Exception as e:
-            logger.error(f"Error calculating support/resistance: {e}")
+            logger.error(f"Error analyzing order book for {symbol}: {e}")
             return {}
     
-    def smart_signal_generation(self, df: pd.DataFrame, symbol: str) -> Optional[Dict]:
-        """Generate smart trading signals with enhanced validation"""
+    def detect_supply_demand_zones(self, df: pd.DataFrame) -> Dict:
+        """Detect supply and demand zones using price action"""
         try:
             if len(df) < 50:
+                return {}
+            
+            current_price = df['close'].iloc[-1]
+            zones = {'demand_zones': [], 'supply_zones': []}
+            
+            # Look for significant moves and consolidations
+            window = 10
+            price_changes = df['close'].pct_change(periods=window)
+            volume_spikes = df['volume_ratio'] > 1.5
+            
+            # Find demand zones (strong bounces with volume)
+            for i in range(window, len(df) - window):
+                # Check for strong bounce (>2% move up with volume)
+                if (price_changes.iloc[i] > 0.02 and 
+                    volume_spikes.iloc[i] and
+                    df['low'].iloc[i] == df['low'].iloc[i-window:i+window].min()):
+                    
+                    zone_low = df['low'].iloc[i-2:i+3].min()
+                    zone_high = df['high'].iloc[i-2:i+3].min()
+                    
+                    if zone_low < current_price < zone_high * 1.10:  # Within 10% above zone
+                        zones['demand_zones'].append({
+                            'low': zone_low,
+                            'high': zone_high,
+                            'strength': volume_spikes.iloc[i-2:i+3].sum(),
+                            'distance_pct': ((current_price - zone_high) / current_price) * 100
+                        })
+            
+            # Find supply zones (strong drops with volume)
+            for i in range(window, len(df) - window):
+                if (price_changes.iloc[i] < -0.02 and 
+                    volume_spikes.iloc[i] and
+                    df['high'].iloc[i] == df['high'].iloc[i-window:i+window].max()):
+                    
+                    zone_high = df['high'].iloc[i-2:i+3].max()
+                    zone_low = df['low'].iloc[i-2:i+3].max()
+                    
+                    if zone_high > current_price > zone_low * 0.90:  # Within 10% below zone
+                        zones['supply_zones'].append({
+                            'low': zone_low,
+                            'high': zone_high,
+                            'strength': volume_spikes.iloc[i-2:i+3].sum(),
+                            'distance_pct': ((zone_low - current_price) / current_price) * 100
+                        })
+            
+            # Sort by proximity to current price
+            zones['demand_zones'] = sorted(zones['demand_zones'], 
+                                         key=lambda x: abs(x['distance_pct']))[:3]
+            zones['supply_zones'] = sorted(zones['supply_zones'], 
+                                         key=lambda x: abs(x['distance_pct']))[:3]
+            
+            return zones
+            
+        except Exception as e:
+            logger.error(f"Error detecting supply/demand zones: {e}")
+            return {}
+    
+    def advanced_signal_generation(self, df: pd.DataFrame, symbol: str) -> Optional[Dict]:
+        """Generate signals using advanced order flow and supply/demand analysis"""
+        try:
+            if len(df) < 100:
                 return None
             
             current_price = df['close'].iloc[-1]
             coin = symbol.replace('/USDT', '')
             
-            # Check if we already have an active signal for this coin
-            if self.database:
-                active_signals = self.database.get_active_signals()
-                active_coins = [s['coin'] for s in active_signals]
-                if coin in active_coins:
-                    logger.debug(f"Already have active signal for {coin}, skipping")
-                    return None
+            # Pre-filtering checks
+            volatility = df['volatility'].iloc[-1]
+            volume_ratio = df['volume_ratio'].iloc[-1]
             
-            # Get analysis components
-            patterns = self.detect_patterns(df)
-            levels = self.calculate_support_resistance(df)
+            # Skip if insufficient volatility or volume
+            if volatility < self.volatility_threshold or volume_ratio < self.volume_threshold:
+                return None
             
-            # Signal scoring system
-            long_score = 0
-            short_score = 0
+            # Get order book analysis
+            order_book_data = self.analyze_order_book_pressure(symbol)
+            
+            # Get supply/demand zones
+            sd_zones = self.detect_supply_demand_zones(df)
+            
+            # Advanced scoring system
+            signal_score = 0
             confidence_factors = []
+            direction_bias = None
             
-            # RSI analysis (weighted)
+            # 1. Order Book Analysis (Weight: 30%)
+            if order_book_data:
+                bid_pressure = order_book_data.get('bid_pressure', 0.5)
+                liquidity_ratio = order_book_data.get('liquidity_ratio', 0.5)
+                spread_pct = order_book_data.get('spread_percentage', 1.0)
+                
+                # Strong buying pressure
+                if bid_pressure > 0.65 and liquidity_ratio > 0.7:
+                    signal_score += 3
+                    confidence_factors.append("Strong bid pressure in order book")
+                    direction_bias = 'LONG'
+                # Strong selling pressure
+                elif bid_pressure < 0.35 and liquidity_ratio > 0.7:
+                    signal_score += 3
+                    confidence_factors.append("Strong ask pressure in order book")
+                    direction_bias = 'SHORT'
+                
+                # Tight spreads indicate good liquidity
+                if spread_pct < 0.1:
+                    signal_score += 1
+                    confidence_factors.append("Tight bid-ask spread")
+            
+            # 2. Supply/Demand Zone Analysis (Weight: 25%)
+            if sd_zones:
+                # Check proximity to demand zones for LONG
+                for zone in sd_zones.get('demand_zones', []):
+                    if abs(zone['distance_pct']) < 1.0 and zone['strength'] >= 2:
+                        if direction_bias == 'LONG' or direction_bias is None:
+                            signal_score += 2
+                            confidence_factors.append(f"Near strong demand zone at ${zone['low']:.6f}")
+                            direction_bias = 'LONG'
+                
+                # Check proximity to supply zones for SHORT
+                for zone in sd_zones.get('supply_zones', []):
+                    if abs(zone['distance_pct']) < 1.0 and zone['strength'] >= 2:
+                        if direction_bias == 'SHORT' or direction_bias is None:
+                            signal_score += 2
+                            confidence_factors.append(f"Near strong supply zone at ${zone['high']:.6f}")
+                            direction_bias = 'SHORT'
+            
+            # 3. Technical Confirmation (Weight: 25%)
             rsi = df['rsi'].iloc[-1]
-            rsi_prev = df['rsi'].iloc[-2]
-            
-            if rsi < 30:
-                long_score += 3
-                confidence_factors.append("RSI oversold")
-            elif rsi < 35 and rsi > rsi_prev:
-                long_score += 2
-                confidence_factors.append("RSI recovering from oversold")
-            elif rsi > 70:
-                short_score += 3
-                confidence_factors.append("RSI overbought")
-            elif rsi > 65 and rsi < rsi_prev:
-                short_score += 2
-                confidence_factors.append("RSI declining from overbought")
-            
-            # MACD analysis (weighted)
             macd_hist = df['macd_hist'].iloc[-1]
             macd_hist_prev = df['macd_hist'].iloc[-2]
-            macd_hist_prev2 = df['macd_hist'].iloc[-3]
+            bb_position = df['bb_position'].iloc[-1]
             
-            # Strong crossover signals
-            if macd_hist > 0 and macd_hist_prev <= 0:
-                long_score += 4
-                confidence_factors.append("MACD bullish crossover")
-            elif macd_hist < 0 and macd_hist_prev >= 0:
-                short_score += 4
-                confidence_factors.append("MACD bearish crossover")
-            # Momentum confirmation
-            elif macd_hist > macd_hist_prev > macd_hist_prev2:
-                long_score += 2
+            # RSI divergence and extremes
+            if rsi < 30 and direction_bias == 'LONG':
+                signal_score += 2
+                confidence_factors.append("RSI oversold confirmation")
+            elif rsi > 70 and direction_bias == 'SHORT':
+                signal_score += 2
+                confidence_factors.append("RSI overbought confirmation")
+            
+            # MACD momentum
+            if macd_hist > macd_hist_prev and direction_bias == 'LONG':
+                signal_score += 1
                 confidence_factors.append("MACD momentum increasing")
-            elif macd_hist < macd_hist_prev < macd_hist_prev2:
-                short_score += 2
+            elif macd_hist < macd_hist_prev and direction_bias == 'SHORT':
+                signal_score += 1
                 confidence_factors.append("MACD momentum decreasing")
             
-            # Volume analysis
-            volume_ratio = df['volume_ratio'].iloc[-1]
-            if volume_ratio > 1.5:
-                if long_score > short_score:
-                    long_score += 2
-                    confidence_factors.append("High volume confirmation (bullish)")
-                elif short_score > long_score:
-                    short_score += 2
-                    confidence_factors.append("High volume confirmation (bearish)")
+            # 4. Volume Profile Analysis (Weight: 20%)
+            recent_volume = df['volume'].iloc[-5:].mean()
+            avg_volume = df['volume'].rolling(50).mean().iloc[-1]
             
-            # Bollinger Bands
-            bb_position = df['bb_position'].iloc[-1]
-            if bb_position < 0.1:
-                long_score += 2
-                confidence_factors.append("Near lower Bollinger Band")
-            elif bb_position > 0.9:
-                short_score += 2
-                confidence_factors.append("Near upper Bollinger Band")
+            if recent_volume > avg_volume * 1.5:
+                signal_score += 1
+                confidence_factors.append("Above-average volume confirmation")
             
-            # Support/Resistance analysis
-            if levels:
-                price_to_support = (current_price - levels.get('immediate_support', 0)) / current_price
-                price_to_resistance = (levels.get('immediate_resistance', current_price) - current_price) / current_price
+            # Volume price trend alignment
+            price_trend = (df['close'].iloc[-1] - df['close'].iloc[-10]) / df['close'].iloc[-10]
+            volume_trend = (recent_volume - df['volume'].iloc[-15:-10].mean()) / df['volume'].iloc[-15:-10].mean()
+            
+            if price_trend > 0 and volume_trend > 0 and direction_bias == 'LONG':
+                signal_score += 1
+                confidence_factors.append("Price-volume trend alignment (bullish)")
+            elif price_trend < 0 and volume_trend > 0 and direction_bias == 'SHORT':
+                signal_score += 1
+                confidence_factors.append("Price-volume trend alignment (bearish)")
+            
+            # Final signal generation
+            if signal_score >= self.min_confidence_score and direction_bias:
+                if direction_bias == 'LONG':
+                    signal = self.create_optimized_long_signal(
+                        df, symbol, signal_score, confidence_factors, sd_zones, order_book_data
+                    )
+                else:
+                    signal = self.create_optimized_short_signal(
+                        df, symbol, signal_score, confidence_factors, sd_zones, order_book_data
+                    )
                 
-                if price_to_support < 0.015:  # Within 1.5% of support
-                    long_score += 3
-                    confidence_factors.append("Near strong support")
-                if price_to_resistance < 0.015:  # Within 1.5% of resistance
-                    short_score += 3
-                    confidence_factors.append("Near strong resistance")
-            
-            # Pattern recognition bonus
-            if patterns.get('divergence') == 'bullish':
-                long_score += 3
-                confidence_factors.append("Bullish divergence detected")
-            elif patterns.get('divergence') == 'bearish':
-                short_score += 3
-                confidence_factors.append("Bearish divergence detected")
-            
-            # Trend alignment
-            trend = patterns.get('trend', 'neutral')
-            if trend == 'strong_bullish':
-                long_score += 2
-            elif trend == 'strong_bearish':
-                short_score += 2
-            elif trend == 'bullish':
-                long_score += 1
-            elif trend == 'bearish':
-                short_score += 1
-            
-            # Stochastic confirmation
-            stoch_k = df['stoch_k'].iloc[-1]
-            stoch_d = df['stoch_d'].iloc[-1]
-            
-            if stoch_k < 20 and stoch_k > stoch_d:
-                long_score += 1
-                confidence_factors.append("Stochastic oversold with bullish cross")
-            elif stoch_k > 80 and stoch_k < stoch_d:
-                short_score += 1
-                confidence_factors.append("Stochastic overbought with bearish cross")
-            
-            # Log analysis
-            if self.database:
-                self.database.log_analysis(
-                    coin, '1h', 'SIGNAL_GENERATION',
-                    f"Long: {long_score}, Short: {short_score}",
-                    max(long_score, short_score) * 10,
-                    {'rsi': rsi, 'macd_hist': macd_hist, 'bb_position': bb_position},
-                    patterns, levels
-                )
-            
-            # Generate signal if conditions are met
-            if long_score >= self.min_confidence_score and long_score > short_score:
-                signal = self.create_long_signal(df, symbol, long_score, confidence_factors, levels)
-                if signal and self.validate_signal_params(signal):
-                    logger.info(f"LONG signal generated for {coin}: Score {long_score}")
-                    return signal
-            elif short_score >= self.min_confidence_score and short_score > long_score:
-                signal = self.create_short_signal(df, symbol, short_score, confidence_factors, levels)
-                if signal and self.validate_signal_params(signal):
-                    logger.info(f"SHORT signal generated for {coin}: Score {short_score}")
+                if signal and self.validate_signal_quality(signal):
                     return signal
             
             return None
@@ -382,98 +415,69 @@ class AdvancedTradingAnalyzer:
             logger.error(f"Error generating signal for {symbol}: {e}")
             return None
     
-    def validate_signal_params(self, signal: Dict) -> bool:
-        """Validate signal parameters before returning"""
-        try:
-            direction = signal['direction']
-            entry = signal['entry_price']
-            tp = signal['take_profit']
-            sl = signal['stop_loss']
-            current = signal['current_price']
-            
-            # Check basic logic
-            if direction == 'LONG':
-                # For LONG: SL < Entry < Current < TP
-                if not (sl < entry <= current < tp):
-                    logger.warning(f"Invalid LONG signal params: SL={sl:.6f}, Entry={entry:.6f}, Current={current:.6f}, TP={tp:.6f}")
-                    return False
-            else:  # SHORT
-                # For SHORT: TP < Current <= Entry < SL
-                if not (tp < current <= entry < sl):
-                    logger.warning(f"Invalid SHORT signal params: TP={tp:.6f}, Current={current:.6f}, Entry={entry:.6f}, SL={sl:.6f}")
-                    return False
-            
-            # Check risk-reward ratio
-            rr_ratio = signal['analysis_data'].get('risk_reward_ratio', 0)
-            if rr_ratio < self.min_risk_reward_ratio:
-                logger.warning(f"Risk-reward ratio too low: {rr_ratio:.2f}")
-                return False
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error validating signal: {e}")
-            return False
-    
-    def create_long_signal(self, df: pd.DataFrame, symbol: str, score: int, factors: List[str], levels: Dict) -> Dict:
-        """Create a LONG signal with validated parameters"""
+    def create_optimized_long_signal(self, df: pd.DataFrame, symbol: str, score: int, 
+                                   factors: List[str], sd_zones: Dict, order_book: Dict) -> Dict:
+        """Create optimized LONG signal with dynamic SL/TP based on market structure"""
         current_price = df['close'].iloc[-1]
         atr = df['atr'].iloc[-1]
-        atr_percentage = df['atr_percentage'].iloc[-1]
         
-        # Entry price: Current price (we enter at market)
+        # Dynamic entry strategy
         entry_price = current_price
         
-        # Stop loss calculation
-        # Use ATR-based stop with support level validation
-        atr_multiplier = 2.0 if atr_percentage > 3 else 1.5  # Adjust for volatility
-        atr_stop = entry_price - (atr * atr_multiplier)
+        # Smart stop loss using multiple factors
+        atr_stop = entry_price - (atr * 1.5)
         
-        # Use support level if available and reasonable
-        if levels.get('immediate_support'):
-            support_stop = levels['immediate_support'] * 0.995
-            # Use the higher of the two (closer to entry) for better risk management
-            stop_loss = max(atr_stop, support_stop)
-        else:
-            stop_loss = atr_stop
+        # Use demand zone if available
+        zone_stop = None
+        if sd_zones.get('demand_zones'):
+            nearest_zone = min(sd_zones['demand_zones'], 
+                             key=lambda x: abs(x['distance_pct']))
+            zone_stop = nearest_zone['low'] * 0.998  # Slightly below zone
         
-        # Ensure minimum stop distance (0.5%)
-        min_stop_distance = entry_price * 0.005
-        if entry_price - stop_loss < min_stop_distance:
-            stop_loss = entry_price - min_stop_distance
+        # Use order book support if available
+        ob_stop = None
+        if order_book.get('significant_support'):
+            ob_stop = min(order_book['significant_support']) * 0.999
         
-        # Take profit calculation
+        # Choose the most conservative (highest) stop loss
+        stop_options = [s for s in [atr_stop, zone_stop, ob_stop] if s is not None]
+        stop_loss = max(stop_options) if stop_options else atr_stop
+        
+        # Ensure minimum stop distance
+        min_stop = entry_price * 0.995
+        stop_loss = max(stop_loss, min_stop)
+        
+        # Dynamic take profit based on resistance and R:R
         risk = entry_price - stop_loss
-        base_rr_ratio = 2.5
         
-        # Adjust R:R based on confidence
-        if score >= 8:
+        # Base R:R ratio adjusted for score
+        if score >= 9:
+            rr_ratio = 3.5
+        elif score >= 8:
             rr_ratio = 3.0
-        elif score >= 6:
-            rr_ratio = 2.5
         else:
-            rr_ratio = 2.0
+            rr_ratio = 2.5
         
         take_profit = entry_price + (risk * rr_ratio)
         
-        # Validate against resistance
-        if levels.get('immediate_resistance'):
-            resistance_limit = levels['immediate_resistance'] * 0.995
-            if take_profit > resistance_limit:
-                # Adjust TP to just below resistance
-                take_profit = resistance_limit
+        # Adjust for supply zones
+        if sd_zones.get('supply_zones'):
+            nearest_resistance = min(sd_zones['supply_zones'], 
+                                   key=lambda x: abs(x['distance_pct']))
+            if take_profit > nearest_resistance['low']:
+                take_profit = nearest_resistance['low'] * 0.998
                 # Recalculate R:R
                 new_rr = (take_profit - entry_price) / risk
-                if new_rr < self.min_risk_reward_ratio:
-                    # If R:R becomes too low, widen the stop
-                    stop_loss = entry_price - ((take_profit - entry_price) / self.min_risk_reward_ratio)
+                if new_rr < 2.0:
+                    return None  # Skip if R:R becomes too low
         
-        # Ensure TP is at least 1% above entry
-        min_tp_distance = entry_price * 1.01
-        if take_profit < min_tp_distance:
-            take_profit = min_tp_distance
+        # Adjust for order book resistance
+        if order_book.get('significant_resistance'):
+            max_resistance = min(order_book['significant_resistance'])
+            if take_profit > max_resistance:
+                take_profit = max_resistance * 0.999
         
-        signal_id = f"{symbol.replace('/', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        signal_id = f"{symbol.replace('/', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_L"
         
         return {
             'signal_id': signal_id,
@@ -487,81 +491,76 @@ class AdvancedTradingAnalyzer:
             'confidence': min(95, score * 10),
             'analysis_data': {
                 'reasons': factors,
-                'atr': round(atr, 6),
-                'atr_percentage': round(atr_percentage, 2),
+                'score': score,
                 'risk_reward_ratio': round((take_profit - entry_price) / (entry_price - stop_loss), 2),
-                'risk_percentage': round(((entry_price - stop_loss) / entry_price) * 100, 2),
-                'profit_percentage': round(((take_profit - entry_price) / entry_price) * 100, 2),
-                'support_level': levels.get('immediate_support'),
-                'resistance_level': levels.get('immediate_resistance'),
-                'score': score
+                'atr': round(atr, 6),
+                'supply_demand_zones': sd_zones,
+                'order_book_analysis': order_book,
+                'risk_percentage': round(((entry_price - stop_loss) / entry_price) * 100, 2)
             },
             'indicators': {
                 'rsi': round(df['rsi'].iloc[-1], 2),
-                'macd': round(df['macd'].iloc[-1], 6),
                 'macd_hist': round(df['macd_hist'].iloc[-1], 6),
-                'bb_position': round(df['bb_position'].iloc[-1], 3),
                 'volume_ratio': round(df['volume_ratio'].iloc[-1], 2),
-                'stoch_k': round(df['stoch_k'].iloc[-1], 2),
-                'atr': round(atr, 6)
+                'bb_position': round(df['bb_position'].iloc[-1], 3),
+                'atr_percentage': round(df['atr_percentage'].iloc[-1], 2)
             }
         }
     
-    def create_short_signal(self, df: pd.DataFrame, symbol: str, score: int, factors: List[str], levels: Dict) -> Dict:
-        """Create a SHORT signal with validated parameters"""
+    def create_optimized_short_signal(self, df: pd.DataFrame, symbol: str, score: int, 
+                                    factors: List[str], sd_zones: Dict, order_book: Dict) -> Dict:
+        """Create optimized SHORT signal with dynamic SL/TP based on market structure"""
         current_price = df['close'].iloc[-1]
         atr = df['atr'].iloc[-1]
-        atr_percentage = df['atr_percentage'].iloc[-1]
         
-        # Entry price: Current price (we enter at market)
         entry_price = current_price
         
-        # Stop loss calculation
-        atr_multiplier = 2.0 if atr_percentage > 3 else 1.5
-        atr_stop = entry_price + (atr * atr_multiplier)
+        # Smart stop loss using multiple factors
+        atr_stop = entry_price + (atr * 1.5)
         
-        # Use resistance level if available
-        if levels.get('immediate_resistance'):
-            resistance_stop = levels['immediate_resistance'] * 1.005
-            # Use the lower of the two (closer to entry)
-            stop_loss = min(atr_stop, resistance_stop)
-        else:
-            stop_loss = atr_stop
+        # Use supply zone if available
+        zone_stop = None
+        if sd_zones.get('supply_zones'):
+            nearest_zone = min(sd_zones['supply_zones'], 
+                             key=lambda x: abs(x['distance_pct']))
+            zone_stop = nearest_zone['high'] * 1.002
+        
+        # Use order book resistance
+        ob_stop = None
+        if order_book.get('significant_resistance'):
+            ob_stop = max(order_book['significant_resistance']) * 1.001
+        
+        # Choose the most conservative (lowest) stop loss
+        stop_options = [s for s in [atr_stop, zone_stop, ob_stop] if s is not None]
+        stop_loss = min(stop_options) if stop_options else atr_stop
         
         # Ensure minimum stop distance
-        min_stop_distance = entry_price * 0.005
-        if stop_loss - entry_price < min_stop_distance:
-            stop_loss = entry_price + min_stop_distance
+        max_stop = entry_price * 1.005
+        stop_loss = min(stop_loss, max_stop)
         
-        # Take profit calculation
+        # Dynamic take profit
         risk = stop_loss - entry_price
         
-        # Adjust R:R based on confidence
-        if score >= 8:
+        if score >= 9:
+            rr_ratio = 3.5
+        elif score >= 8:
             rr_ratio = 3.0
-        elif score >= 6:
-            rr_ratio = 2.5
         else:
-            rr_ratio = 2.0
+            rr_ratio = 2.5
         
         take_profit = entry_price - (risk * rr_ratio)
         
-        # Validate against support
-        if levels.get('immediate_support'):
-            support_limit = levels['immediate_support'] * 1.005
-            if take_profit < support_limit:
-                take_profit = support_limit
-                # Recalculate R:R
+        # Adjust for demand zones
+        if sd_zones.get('demand_zones'):
+            nearest_support = min(sd_zones['demand_zones'], 
+                                key=lambda x: abs(x['distance_pct']))
+            if take_profit < nearest_support['high']:
+                take_profit = nearest_support['high'] * 1.002
                 new_rr = (entry_price - take_profit) / risk
-                if new_rr < self.min_risk_reward_ratio:
-                    stop_loss = entry_price + ((entry_price - take_profit) / self.min_risk_reward_ratio)
+                if new_rr < 2.0:
+                    return None
         
-        # Ensure TP is at least 1% below entry
-        min_tp_distance = entry_price * 0.99
-        if take_profit > min_tp_distance:
-            take_profit = min_tp_distance
-        
-        signal_id = f"{symbol.replace('/', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        signal_id = f"{symbol.replace('/', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_S"
         
         return {
             'signal_id': signal_id,
@@ -575,68 +574,122 @@ class AdvancedTradingAnalyzer:
             'confidence': min(95, score * 10),
             'analysis_data': {
                 'reasons': factors,
-                'atr': round(atr, 6),
-                'atr_percentage': round(atr_percentage, 2),
+                'score': score,
                 'risk_reward_ratio': round((entry_price - take_profit) / (stop_loss - entry_price), 2),
-                'risk_percentage': round(((stop_loss - entry_price) / entry_price) * 100, 2),
-                'profit_percentage': round(((entry_price - take_profit) / entry_price) * 100, 2),
-                'support_level': levels.get('immediate_support'),
-                'resistance_level': levels.get('immediate_resistance'),
-                'score': score
+                'atr': round(atr, 6),
+                'supply_demand_zones': sd_zones,
+                'order_book_analysis': order_book,
+                'risk_percentage': round(((stop_loss - entry_price) / entry_price) * 100, 2)
             },
             'indicators': {
                 'rsi': round(df['rsi'].iloc[-1], 2),
-                'macd': round(df['macd'].iloc[-1], 6),
                 'macd_hist': round(df['macd_hist'].iloc[-1], 6),
-                'bb_position': round(df['bb_position'].iloc[-1], 3),
                 'volume_ratio': round(df['volume_ratio'].iloc[-1], 2),
-                'stoch_k': round(df['stoch_k'].iloc[-1], 2),
-                'atr': round(atr, 6)
+                'bb_position': round(df['bb_position'].iloc[-1], 3),
+                'atr_percentage': round(df['atr_percentage'].iloc[-1], 2)
             }
         }
     
+    def validate_signal_quality(self, signal: Dict) -> bool:
+        """Comprehensive signal validation"""
+        try:
+            entry = signal['entry_price']
+            tp = signal['take_profit']
+            sl = signal['stop_loss']
+            direction = signal['direction']
+            
+            # Basic price logic validation
+            if direction == 'LONG':
+                if not (sl < entry < tp):
+                    return False
+            else:
+                if not (tp < entry < sl):
+                    return False
+            
+            # Risk-reward validation
+            rr_ratio = signal['analysis_data']['risk_reward_ratio']
+            if rr_ratio < self.min_risk_reward_ratio:
+                return False
+            
+            # Risk percentage validation (max 2% risk per trade)
+            risk_pct = signal['analysis_data']['risk_percentage']
+            if risk_pct > 2.0:
+                return False
+            
+            # Confidence validation
+            if signal['confidence'] < 70:
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error validating signal: {e}")
+            return False
+    
     async def scan_all_coins(self) -> List[Dict]:
-        """Scan all coins for trading opportunities"""
+        """Scan all coins with improved filtering and limits"""
         signals = []
+        processed_count = 0
         
-        for i, symbol in enumerate(self.coins):
+        # Randomize coin order to avoid bias
+        import random
+        coins_to_scan = self.coins.copy()
+        random.shuffle(coins_to_scan)
+        
+        for symbol in coins_to_scan:
             try:
-                logger.debug(f"Scanning {symbol} ({i+1}/{len(self.coins)})")
+                if len(signals) >= self.max_signals_per_scan:
+                    break
                 
-                # Fetch market data
+                logger.debug(f"Scanning {symbol}")
+                processed_count += 1
+                
+                # Fetch and validate market data
                 df = await self.get_market_data(symbol, '1h', 200)
-                
-                if df.empty or len(df) < 50:
+                if df.empty or len(df) < 100:
                     continue
                 
                 # Calculate indicators
                 df = self.calculate_technical_indicators(df)
-                
                 if len(df) < 50:
                     continue
                 
-                # Generate signal
-                signal = self.smart_signal_generation(df, symbol)
+                # Pre-filter based on basic conditions
+                volume_ratio = df['volume_ratio'].iloc[-1]
+                volatility = df['volatility'].iloc[-1]
+                
+                if volume_ratio < self.volume_threshold or volatility < self.volatility_threshold:
+                    continue
+                
+                # Generate signal using advanced analysis
+                signal = self.advanced_signal_generation(df, symbol)
                 
                 if signal:
                     signals.append(signal)
-                    logger.info(f"Signal generated for {symbol}: {signal['direction']}")
+                    logger.info(f"High-quality signal generated: {symbol} {signal['direction']} (Score: {signal['analysis_data']['score']})")
                 
-                # Small delay between requests
-                await asyncio.sleep(0.2)
+                # Rate limiting
+                await asyncio.sleep(0.3)
                 
             except Exception as e:
                 logger.error(f"Error scanning {symbol}: {e}")
                 continue
         
-        logger.info(f"Scan complete: {len(signals)} signals generated from {len(self.coins)} coins")
+        logger.info(f"Scan complete: {len(signals)} signals from {processed_count} coins analyzed")
         return signals
     
     async def get_current_price(self, symbol: str) -> float:
-        """Get current price for a symbol"""
+        """Get current price with caching and error handling"""
         try:
             ticker = self.exchange.fetch_ticker(f"{symbol}/USDT")
-            return ticker['last']
+            price = ticker.get('last', 0)
+            
+            if price <= 0:
+                logger.warning(f"Invalid price for {symbol}: {price}")
+                return 0.0
+            
+            return float(price)
+            
         except Exception as e:
             logger.error(f"Error fetching price for {symbol}: {e}")
             return 0.0
