@@ -1034,40 +1034,52 @@ class MLEnhancedDatabase:
     def clean_old_ml_data(self, days: int = 7):
         """Clean old ML data to maintain performance"""
         try:
-            with self.get_db_connection() as conn:
-                cursor = conn.cursor()
+            # Add retry logic for database locks
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    with self.get_db_connection() as conn:
+                        cursor = conn.cursor()
                 
-                # Clean old feature importance trends (keep recent trends)
-                cursor.execute('''
-                DELETE FROM feature_importance_trends 
-                WHERE timestamp < datetime('now', '-{} days')
-                '''.format(days * 2))  # Keep longer history for trends
+                        # Clean old feature importance trends (keep recent trends)
+                        cursor.execute('''
+                        DELETE FROM feature_importance_trends 
+                        WHERE timestamp < datetime('now', '-{} days')
+                        '''.format(days * 2))  # Keep longer history for trends
                 
-                # Clean old model performance history (keep recent performance)
-                cursor.execute('''
-                DELETE FROM model_performance_history 
-                WHERE timestamp < datetime('now', '-{} days')
-                AND id NOT IN (
-                    SELECT id FROM model_performance_history 
-                    ORDER BY timestamp DESC 
-                    LIMIT 1000
-                )
-                '''.format(days))
+                        # Clean old model performance history (keep recent performance)
+                        cursor.execute('''
+                        DELETE FROM model_performance_history 
+                        WHERE timestamp < datetime('now', '-{} days')
+                        AND id NOT IN (
+                            SELECT id FROM model_performance_history 
+                            ORDER BY timestamp DESC 
+                            LIMIT 1000
+                        )
+                        '''.format(days))
                 
-                # Clean old feature engineering logs
-                cursor.execute('''
-                DELETE FROM feature_engineering_log 
-                WHERE timestamp < datetime('now', '-{} days')
-                '''.format(days))
+                        # Clean old feature engineering logs
+                        cursor.execute('''
+                        DELETE FROM feature_engineering_log 
+                        WHERE timestamp < datetime('now', '-{} days')
+                        '''.format(days))
                 
-                # Clean old closed ML predictions
-                cursor.execute('''
-                DELETE FROM ml_predictions 
-                WHERE outcome_at < datetime('now', '-{} days')
-                AND outcome_at IS NOT NULL
-                '''.format(days))
+                        # Clean old closed ML predictions
+                        cursor.execute('''
+                        DELETE FROM ml_predictions 
+                        WHERE outcome_at < datetime('now', '-{} days')
+                        AND outcome_at IS NOT NULL
+                        '''.format(days))
                 
-                logger.info("ML data cleanup completed")
+                        logger.info("ML data cleanup completed")
+                        break
+
+                except sqlite3.OperationalError as e:
+                    if "database is locked" in str(e) and attempt < max_retries - 1:
+                        time.sleep(1)  # Wait before retry
+                        continue
+                    else:
+                        raise e
                 
         except Exception as e:
             logger.error(f"Error cleaning old ML data: {e}")
