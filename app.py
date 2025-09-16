@@ -542,6 +542,47 @@ class MLTradingBot:
                 logger.error(f"Error getting ML system stats: {e}")
                 return JSONResponse(content={"error": str(e)}, status_code=500)
 
+        @self.app.get("/api/logs")
+        async def get_recent_logs():
+            """Get recent bot logs"""
+            try:
+                logs = self.database.get_recent_logs(limit=50)
+                return JSONResponse(content={"logs": logs})
+            except Exception as e:
+                logger.error(f"Error getting logs: {e}")
+                return JSONResponse(content={"error": str(e)}, status_code=500)
+
+        @self.app.get("/api/alerts")
+        async def get_alerts():
+            """Get system alerts and notifications"""
+            try:
+                # Get recent errors and important events
+                with self.database.get_db_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                    SELECT * FROM bot_logs 
+                    WHERE level IN ('ERROR', 'WARNING') 
+                    ORDER BY timestamp DESC 
+                    LIMIT 20
+                    ''')
+                    
+                    alerts = []
+                    for row in cursor.fetchall():
+                        alert = dict(row)
+                        alerts.append({
+                            'id': alert['id'],
+                            'level': alert['level'],
+                            'message': alert['message'],
+                            'component': alert['component'],
+                            'timestamp': alert['timestamp'],
+                            'details': alert.get('details')
+                        })
+                
+                return JSONResponse(content={"alerts": alerts})
+            except Exception as e:
+                logger.error(f"Error getting alerts: {e}")
+                return JSONResponse(content={"error": str(e)}, status_code=500)
+
         @self.app.post("/api/control/retrain")
         async def trigger_model_retrain():
             """Manually trigger model retraining"""

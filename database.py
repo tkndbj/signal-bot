@@ -52,6 +52,12 @@ class MLEnhancedDatabase:
         finally:
             if conn:
                 conn.close()
+
+    def row_to_dict(self, row):
+        """Convert sqlite3.Row to dictionary safely"""
+        if row is None:
+            return None
+        return dict(row) if hasattr(row, 'keys') else row
     
     def init_ml_database(self):
         """Initialize ML-enhanced database with new tables for ML features"""
@@ -598,6 +604,7 @@ class MLEnhancedDatabase:
             logger.error(f"Error loading ML model for {coin}: {e}")
             return None
     
+    
     def get_active_signals(self) -> List[Dict]:
         """Get all active signals with ML enhancement data"""
         try:
@@ -736,9 +743,9 @@ class MLEnhancedDatabase:
             
             # Get current portfolio stats
             cursor.execute('SELECT * FROM portfolio ORDER BY id DESC LIMIT 1')
-            portfolio = cursor.fetchone()
+            portfolio_row = cursor.fetchone()
             
-            if not portfolio:
+            if not portfolio_row:
                 # Initialize portfolio
                 cursor.execute('''
                 INSERT INTO portfolio (
@@ -747,6 +754,9 @@ class MLEnhancedDatabase:
                 ) VALUES (1000, 1, ?, 0, ?, 1000, 1, ?, ?)
                 ''', (1 if pnl_usd > 0 else 0, pnl_usd, prediction_accuracy, model_confidence))
                 return
+            
+            # Convert sqlite3.Row to dict
+            portfolio = dict(portfolio_row)
             
             # Calculate new stats
             balance = portfolio['balance_usd']
@@ -758,9 +768,9 @@ class MLEnhancedDatabase:
             peak_balance = portfolio['peak_balance']
             
             # ML-specific stats
-            ml_signals_count = portfolio['ml_signals_count']
-            prev_ml_accuracy = portfolio['ml_model_accuracy']
-            prev_avg_confidence = portfolio['avg_prediction_confidence']
+            ml_signals_count = portfolio.get('ml_signals_count', 0)
+            prev_ml_accuracy = portfolio.get('ml_model_accuracy', 0)
+            prev_avg_confidence = portfolio.get('avg_prediction_confidence', 0)
             
             # Update counters
             new_balance = balance + pnl_usd
@@ -811,7 +821,7 @@ class MLEnhancedDatabase:
         try:
             if total_trades < 2:
                 return 0.0
-            
+        
             # Get trade returns for volatility calculation
             with self.get_db_connection() as conn:
                 cursor = conn.cursor()
@@ -821,22 +831,27 @@ class MLEnhancedDatabase:
                 ORDER BY updated_at DESC 
                 LIMIT 50
                 ''')
-                
-                returns = [row['pnl_percentage'] / 100 for row in cursor.fetchall()]
-                
+            
+                # Fix: Convert each row to dict before accessing
+                returns = []
+                for row in cursor.fetchall():
+                    row_dict = self.row_to_dict(row)
+                    if row_dict:
+                        returns.append(row_dict['pnl_percentage'] / 100)
+            
                 if len(returns) < 2:
                     return 0.0
-                
+            
                 avg_return = np.mean(returns)
                 std_return = np.std(returns)
-                
+            
                 if std_return == 0:
                     return 0.0
-                
+            
                 # Annualized Sharpe ratio (assuming daily trades)
                 sharpe = (avg_return - risk_free_rate / 365) / std_return * np.sqrt(365)
                 return min(5.0, max(-5.0, sharpe))  # Cap at reasonable bounds
-                
+            
         except Exception as e:
             logger.error(f"Error calculating Sharpe ratio: {e}")
             return 0.0
@@ -1115,29 +1130,33 @@ class MLEnhancedDatabase:
                 
         except Exception as e:
             logger.error(f"Error updating ML signal price for {signal_id}: {e}")
-            return False
+            return False    
     
     def get_portfolio_stats(self) -> Dict:
         """Get ML-enhanced portfolio statistics"""
         try:
             with self.get_db_connection() as conn:
                 cursor = conn.cursor()
-                
+            
                 # Get latest portfolio record
                 cursor.execute('SELECT * FROM portfolio ORDER BY id DESC LIMIT 1')
-                portfolio = cursor.fetchone()
-                
-                if not portfolio:
+                portfolio_row = cursor.fetchone()
+            
+                if not portfolio_row:
                     return self._get_default_ml_portfolio_stats()
-                
+            
+                # Convert sqlite3.Row to dict properly
+                portfolio = dict(portfolio_row)
+            
                 # Get current open P&L
                 cursor.execute('''
                 SELECT COALESCE(SUM(pnl_usd), 0) as open_pnl
                 FROM trade_results 
                 WHERE status = 'open'
                 ''')
-                open_pnl = cursor.fetchone()['open_pnl']
-                
+                open_pnl_row = cursor.fetchone()
+                open_pnl = dict(open_pnl_row)['open_pnl'] if open_pnl_row else 0
+            
                 # Get ML-specific trade statistics
                 cursor.execute('''
                 SELECT 
@@ -1152,29 +1171,30 @@ class MLEnhancedDatabase:
                 FROM trade_results 
                 WHERE status = 'closed'
                 ''')
-                
-                trade_stats = cursor.fetchone()
-                
-                total_trades = portfolio['total_trades']
-                winning_trades = portfolio['winning_trades']
-                
+            
+                trade_stats_row = cursor.fetchone()
+                trade_stats = self.row_to_dict(trade_stats_row)
+            
+                total_trades = portfolio.get('total_trades', 0)
+                winning_trades = portfolio.get('winning_trades', 0)
+            
                 return {
-                    'total_balance': portfolio['balance_usd'] + open_pnl,
+                    'total_balance': portfolio.get('balance_usd', 1000) + open_pnl,
                     'total_trades': total_trades,
                     'winning_trades': winning_trades,
-                    'losing_trades': portfolio['losing_trades'],
+                    'losing_trades': portfolio.get('losing_trades', 0),
                     'win_rate': (winning_trades / total_trades * 100) if total_trades > 0 else 0,
-                    'total_pnl': portfolio['total_pnl'] + open_pnl,
-                    'avg_pnl': trade_stats['avg_pnl'],
-                    'best_trade': trade_stats['best_trade'],
-                    'worst_trade': trade_stats['worst_trade'],
-                    'avg_win': trade_stats['avg_win'],
-                    'avg_loss': trade_stats['avg_loss'],
-                    'max_drawdown': portfolio['max_drawdown'],
+                    'total_pnl': portfolio.get('total_pnl', 0) + open_pnl,
+                    'avg_pnl': trade_stats.get('avg_pnl', 0),
+                    'best_trade': trade_stats.get('best_trade', 0),
+                    'worst_trade': trade_stats.get('worst_trade', 0),
+                    'avg_win': trade_stats.get('avg_win', 0),
+                    'avg_loss': trade_stats.get('avg_loss', 0),
+                    'max_drawdown': portfolio.get('max_drawdown', 0),
                     'open_pnl': open_pnl,
-                    'peak_balance': portfolio['peak_balance'],
-                    'avg_duration_minutes': trade_stats['avg_duration'],
-                    
+                    'peak_balance': portfolio.get('peak_balance', 1000),
+                    'avg_duration_minutes': trade_stats.get('avg_duration', 0),
+                
                     # ML-specific metrics
                     'ml_signals_count': portfolio.get('ml_signals_count', 0),
                     'ml_model_accuracy': portfolio.get('ml_model_accuracy', 0),
@@ -1182,10 +1202,10 @@ class MLEnhancedDatabase:
                     'feature_orthogonality_score': portfolio.get('feature_orthogonality_score', 0),
                     'sharpe_ratio': portfolio.get('sharpe_ratio', 0),
                     'ml_success_rate': portfolio.get('ml_success_rate', 0),
-                    'avg_ml_prediction_accuracy': trade_stats['avg_ml_accuracy'],
-                    'avg_model_confidence_at_entry': trade_stats['avg_model_confidence']
+                    'avg_ml_prediction_accuracy': trade_stats.get('avg_ml_accuracy', 0),
+                    'avg_model_confidence_at_entry': trade_stats.get('avg_model_confidence', 0)
                 }
-                
+            
         except Exception as e:
             logger.error(f"Error getting ML portfolio stats: {e}")
             return self._get_default_ml_portfolio_stats()
