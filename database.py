@@ -195,8 +195,7 @@ class MLEnhancedDatabase:
                 model_type TEXT NOT NULL,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 stability_score REAL DEFAULT 0,
-                trend_direction TEXT CHECK (trend_direction IN ('up', 'down', 'stable')),
-                INDEX (coin, feature_name, timestamp)
+                trend_direction TEXT CHECK (trend_direction IN ('up', 'down', 'stable')),                
             )
             ''')
             
