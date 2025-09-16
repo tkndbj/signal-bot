@@ -273,7 +273,7 @@ class MLTradingBot:
         async def dashboard():
             """Serve ML-enhanced dashboard"""
             try:
-                with open("templates/ml_dashboard.html", "r") as f:
+                with open("templates/dashboard.html", "r") as f:
                     return HTMLResponse(content=f.read())
             except FileNotFoundError:
                 return HTMLResponse(content=self.get_ml_enhanced_dashboard())
