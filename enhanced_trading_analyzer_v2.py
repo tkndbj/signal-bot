@@ -14,6 +14,19 @@ from enum import Enum
 import time
 from concurrent.futures import ThreadPoolExecutor
 import warnings
+
+# ML and feature engineering imports
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.preprocessing import StandardScaler, RobustScaler
+from sklearn.decomposition import PCA
+from sklearn.feature_selection import SelectKBest, f_regression, mutual_info_regression
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+import shap
+from scipy import stats
+from scipy.linalg import qr
+import joblib
+
 warnings.filterwarnings('ignore')
 
 logger = logging.getLogger(__name__)
@@ -47,45 +60,63 @@ class TradingSignal:
     risk_percentage: float
     analysis_summary: Dict
     confluence_factors: List[str]
+    ml_prediction: float
+    feature_importance: Dict
+    model_confidence: float
 
-class ProductionTradingAnalyzer:
+class MLTradingAnalyzer:
     def __init__(self, database=None):
         load_dotenv()
         
-        # Initialize exchange with proper error handling
+        # Initialize exchange
         self.exchange = self._initialize_exchange()
         self.database = database
         
-        # Core parameters (simplified and battle-tested)
+        # Core parameters
         self.coins = [
-            'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT',
-            'SOL/USDT', 'DOGE/USDT', 'BONK/USDT', 'FLOKI/USDT', 'LINK/USDT',
-            'PEPE/USDT', 'UNI/USDT', 'LTC/USDT', 'ATOM/USDT', 'NEAR/USDT',
-            'TIA/USDT', 'ARB/USDT', 'APT/USDT', 'TAO/USDT', 'FET/USDT',
-            'SUI/USDT', 'SEI/USDT', 'OP/USDT', 'LDO/USDT', 'SHIB/USDT',
+            'SOL/USDT','DOGE/USDT','BONK/USDT','FLOKI/USDT','LINK/USDT','PEPE/USDT',
+            'NEAR/USDT','TIA/USDT','ARB/USDT','APT/USDT','TAO/USDT','FET/USDT',
+            'SUI/USDT','SEI/USDT','OP/USDT','LDO/USDT','SHIB/USDT','BOME/USDT',
+            'PENDLE/USDT','JUP/USDT','LINEA/USDT','UB/USDT','ZEC/USDT','CGPT/USDT',
+            'POPCAT/USDT','WIF/USDT','OL/USDT','JASMY/USDT','BLUR/USDT','GMX/USDT',
+            'COMP/USDT','CRV/USDT','SNX/USDT','1INCH/USDT','SUSHI/USDT','YFI/USDT',
+            'BAL/USDT','MKR/USDT'
         ]
         
-        # Trading parameters (proven through backtesting)
-        self.min_volume_surge = 1.8  # 80% above average
-        self.min_volatility = 0.4    # Minimum for meaningful moves
-        self.max_risk_per_trade = 1.2  # Conservative 1.2%
-        self.min_rr_ratio = 2.5      # Higher standard
-        self.max_signals_per_scan = 2  # Quality over quantity
+        # Enhanced trading parameters
+        self.min_model_confidence = 0.65
+        self.min_feature_importance_sum = 0.5
+        self.max_risk_per_trade = 1.0
+        self.min_rr_ratio = 2.0
+        self.max_signals_per_scan = 7
         
-        # Market state tracking
-        self.market_regime = MarketRegime.RANGING
-        self.volatility_regime = MarketRegime.LOW_VOLATILITY
+        # ML Model parameters
+        self.lookback_periods = 500  # For training
+        self.prediction_horizon = 24  # Hours ahead to predict
+        self.feature_selection_k = 15  # Top K features to keep
+        self.cv_folds = 5  # Time series CV folds
         
-        # Rate limiting and performance
+        # Feature engineering parameters
+        self.orthogonal_threshold = 0.85  # Correlation threshold for orthogonalization
+        self.pca_variance_threshold = 0.95
+        
+        # Models storage
+        self.models = {}
+        self.scalers = {}
+        self.feature_selectors = {}
+        self.pca_transformers = {}
+        self.feature_importance_history = {}
+        
+        # Rate limiting
         self.request_delays = {}
         self.min_request_interval = 0.5
         self.cache = {}
-        self.cache_duration = 30  # 30 seconds
+        self.cache_duration = 60
         
-        # Threading for parallel processing
+        # Threading
         self.executor = ThreadPoolExecutor(max_workers=4)
         
-        logger.info("Production Trading Analyzer initialized with enhanced algorithms")
+        logger.info("ML Trading Analyzer initialized with advanced feature engineering")
     
     def _initialize_exchange(self) -> ccxt.Exchange:
         """Initialize exchange with robust error handling"""
@@ -103,14 +134,12 @@ class ProductionTradingAnalyzer:
                 }
             })
             
-            # Test connection
             exchange.load_markets()
             logger.info("Exchange connection established successfully")
             return exchange
             
         except Exception as e:
             logger.error(f"Failed to initialize exchange: {e}")
-            # Fallback to basic connection
             return ccxt.binance({
                 'rateLimit': 1000,
                 'enableRateLimit': True,
@@ -118,12 +147,12 @@ class ProductionTradingAnalyzer:
             })
     
     async def get_market_data(self, symbol: str, timeframe: str = '1h', 
-                            limit: int = 200) -> pd.DataFrame:
-        """Enhanced market data fetching with caching and validation"""
+                            limit: int = 500) -> pd.DataFrame:
+        """Enhanced market data fetching with extended history"""
         cache_key = f"{symbol}_{timeframe}_{limit}"
         current_time = time.time()
         
-        # Check cache first
+        # Check cache
         if (cache_key in self.cache and 
             current_time - self.cache[cache_key]['timestamp'] < self.cache_duration):
             return self.cache[cache_key]['data'].copy()
@@ -140,20 +169,20 @@ class ProductionTradingAnalyzer:
             # Fetch with retry logic
             ohlcv = await self._fetch_with_retry(symbol, timeframe, limit)
             
-            if not ohlcv or len(ohlcv) < 100:
+            if not ohlcv or len(ohlcv) < 200:
                 return pd.DataFrame()
             
-            # Create DataFrame with validation
+            # Create DataFrame
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
             
-            # Data quality checks
+            # Data quality validation
             if not self._validate_data_quality(df):
                 logger.warning(f"Poor data quality for {symbol}")
                 return pd.DataFrame()
             
-            # Cache the result
+            # Cache result
             self.cache[cache_key] = {
                 'data': df.copy(),
                 'timestamp': current_time
@@ -174,21 +203,28 @@ class ProductionTradingAnalyzer:
             except Exception as e:
                 if attempt == max_retries - 1:
                     raise e
-                await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                await asyncio.sleep(2 ** attempt)
         return []
     
     def _validate_data_quality(self, df: pd.DataFrame) -> bool:
-        """Validate data quality"""
-        if df.empty or len(df) < 50:
+        """Enhanced data quality validation"""
+        if df.empty or len(df) < 200:
             return False
         
         # Check for null values
-        if df.isnull().sum().sum() > len(df) * 0.05:  # More than 5% nulls
+        if df.isnull().sum().sum() > len(df) * 0.02:
             return False
         
         # Check for zero volume
-        if (df['volume'] == 0).sum() > len(df) * 0.1:  # More than 10% zero volume
+        if (df['volume'] == 0).sum() > len(df) * 0.05:
             return False
+        
+        # Check for extreme outliers
+        price_cols = ['open', 'high', 'low', 'close']
+        for col in price_cols:
+            z_scores = np.abs(stats.zscore(df[col].fillna(df[col].median())))
+            if (z_scores > 5).sum() > len(df) * 0.01:  # More than 1% extreme outliers
+                return False
         
         # Check for price consistency
         if (df['high'] < df['low']).any() or (df['high'] < df['close']).any():
@@ -196,881 +232,664 @@ class ProductionTradingAnalyzer:
         
         return True
     
-    def calculate_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate essential technical indicators with error handling"""
-        if df.empty or len(df) < 50:
+    def engineer_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Advanced feature engineering with multiple domains"""
+        if df.empty or len(df) < 100:
             return df
         
         try:
             df = df.dropna().copy()
             
-            # Core moving averages
-            df['ema_9'] = talib.EMA(df['close'].values, timeperiod=9)
-            df['ema_21'] = talib.EMA(df['close'].values, timeperiod=21)
-            df['ema_50'] = talib.EMA(df['close'].values, timeperiod=50)
+            # 1. Price-based features
+            df = self._create_price_features(df)
             
-            # VWAP calculation (more accurate)
-            df['vwap'] = self._calculate_vwap(df)
+            # 2. Volume features
+            df = self._create_volume_features(df)
             
-            # Enhanced MACD
-            df['macd'], df['macd_signal'], df['macd_hist'] = talib.MACD(
-                df['close'].values, fastperiod=12, slowperiod=26, signalperiod=9
-            )
+            # 3. Volatility features
+            df = self._create_volatility_features(df)
             
-            # RSI with proper parameters
-            df['rsi'] = talib.RSI(df['close'].values, timeperiod=14)
+            # 4. Technical indicators (diverse)
+            df = self._create_technical_features(df)
             
-            # Bollinger Bands
-            df['bb_upper'], df['bb_middle'], df['bb_lower'] = talib.BBANDS(
-                df['close'].values, timeperiod=20, nbdevup=2, nbdevdn=2
-            )
+            # 5. Market microstructure
+            df = self._create_microstructure_features(df)
             
-            # ATR for volatility
-            df['atr'] = talib.ATR(df['high'].values, df['low'].values, 
-                                 df['close'].values, timeperiod=14)
-            df['atr_pct'] = (df['atr'] / df['close']) * 100
+            # 6. Momentum and trend features
+            df = self._create_momentum_features(df)
             
-            # Volume analysis
-            df['volume_sma'] = df['volume'].rolling(20).mean()
-            df['volume_ratio'] = df['volume'] / df['volume_sma']
+            # 7. Statistical features
+            df = self._create_statistical_features(df)
             
-            # Market structure
-            df['higher_highs'] = self._detect_higher_highs(df)
-            df['lower_lows'] = self._detect_lower_lows(df)
-            df['market_structure'] = self._determine_market_structure(df)
-            
-            # Support and resistance
-            df['support'], df['resistance'] = self._calculate_sr_levels(df)
+            # 8. Create target variable (future returns)
+            df = self._create_target_variable(df)
             
             return df.dropna()
             
         except Exception as e:
-            logger.error(f"Error calculating indicators: {e}")
+            logger.error(f"Error in feature engineering: {e}")
             return df
     
-    def _calculate_vwap(self, df: pd.DataFrame) -> pd.Series:
-        """Calculate proper VWAP with daily resets"""
-        df_copy = df.copy()
-        df_copy['date'] = df_copy.index.date
+    def _create_price_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Create price-based features"""
+        # Returns at different horizons
+        for period in [1, 2, 4, 8, 12, 24]:
+            df[f'return_{period}h'] = df['close'].pct_change(period)
         
-        vwap_values = []
-        for date in df_copy['date'].unique():
-            day_data = df_copy[df_copy['date'] == date]
-            typical_price = (day_data['high'] + day_data['low'] + day_data['close']) / 3
-            
-            cumulative_tpv = (typical_price * day_data['volume']).cumsum()
-            cumulative_volume = day_data['volume'].cumsum()
-            
-            # Avoid division by zero
-            day_vwap = cumulative_tpv / cumulative_volume.replace(0, np.nan)
-            vwap_values.extend(day_vwap.fillna(method='ffill').tolist())
+        # Log returns
+        df['log_return_1h'] = np.log(df['close'] / df['close'].shift(1))
+        df['log_return_4h'] = np.log(df['close'] / df['close'].shift(4))
         
-        return pd.Series(vwap_values, index=df.index)
+        # Price position within range
+        for period in [10, 20, 50]:
+            df[f'price_position_{period}'] = (df['close'] - df['close'].rolling(period).min()) / \
+                                           (df['close'].rolling(period).max() - df['close'].rolling(period).min())
+        
+        # Gap features
+        df['gap_up'] = (df['open'] - df['close'].shift(1)) / df['close'].shift(1)
+        df['gap_down'] = df['gap_up'] * -1
+        
+        # Intrabar features
+        df['body_size'] = abs(df['close'] - df['open']) / df['open']
+        df['upper_shadow'] = (df['high'] - np.maximum(df['open'], df['close'])) / df['open']
+        df['lower_shadow'] = (np.minimum(df['open'], df['close']) - df['low']) / df['open']
+        df['total_range'] = (df['high'] - df['low']) / df['open']
+        
+        return df
     
-    def _detect_higher_highs(self, df: pd.DataFrame, window: int = 10) -> pd.Series:
-        """Detect higher highs with proper validation"""
-        hh = pd.Series(False, index=df.index)
+    def _create_volume_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Create volume-based features"""
+        # Volume ratios
+        for period in [5, 10, 20]:
+            df[f'volume_ratio_{period}'] = df['volume'] / df['volume'].rolling(period).mean()
         
-        for i in range(window, len(df) - window):
-            current_high = df['high'].iloc[i]
-            left_max = df['high'].iloc[i-window:i].max()
-            right_max = df['high'].iloc[i+1:i+window+1].max()
-            
-            if current_high > left_max and current_high > right_max:
-                # Check if it's actually higher than previous HH
-                prev_hh_indices = hh[:i][hh[:i]].index
-                if len(prev_hh_indices) == 0:
-                    hh.iloc[i] = True
-                else:
-                    last_hh_price = df.loc[prev_hh_indices[-1], 'high']
-                    if current_high > last_hh_price * 1.001:  # 0.1% buffer
-                        hh.iloc[i] = True
+        # Volume-price features
+        df['volume_price_trend'] = talib.OBV(df['close'].values, df['volume'].values)
+        df['vpt'] = talib.OBV(df['close'].values, df['volume'].values)  # Volume Price Trend
         
-        return hh
+        # VWAP variations
+        df['vwap_1d'] = self._calculate_vwap(df, period=24)
+        df['vwap_3d'] = self._calculate_vwap(df, period=72)
+        df['price_vs_vwap_1d'] = (df['close'] - df['vwap_1d']) / df['vwap_1d']
+        
+        # Volume momentum
+        df['volume_momentum_5'] = df['volume'].pct_change(5)
+        df['volume_acceleration'] = df['volume_momentum_5'].diff()
+        
+        # Volume percentiles
+        for period in [20, 50]:
+            df[f'volume_percentile_{period}'] = df['volume'].rolling(period).rank(pct=True)
+        
+        return df
     
-    def _detect_lower_lows(self, df: pd.DataFrame, window: int = 10) -> pd.Series:
-        """Detect lower lows with proper validation"""
-        ll = pd.Series(False, index=df.index)
+    def _create_volatility_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Create volatility features"""
+        # ATR variations
+        for period in [7, 14, 21]:
+            df[f'atr_{period}'] = talib.ATR(df['high'].values, df['low'].values, 
+                                          df['close'].values, timeperiod=period)
+            df[f'atr_pct_{period}'] = df[f'atr_{period}'] / df['close']
         
-        for i in range(window, len(df) - window):
-            current_low = df['low'].iloc[i]
-            left_min = df['low'].iloc[i-window:i].min()
-            right_min = df['low'].iloc[i+1:i+window+1].min()
-            
-            if current_low < left_min and current_low < right_min:
-                # Check if it's actually lower than previous LL
-                prev_ll_indices = ll[:i][ll[:i]].index
-                if len(prev_ll_indices) == 0:
-                    ll.iloc[i] = True
-                else:
-                    last_ll_price = df.loc[prev_ll_indices[-1], 'low']
-                    if current_low < last_ll_price * 0.999:  # 0.1% buffer
-                        ll.iloc[i] = True
+        # Realized volatility
+        for period in [24, 48, 168]:  # 1d, 2d, 1w
+            returns = np.log(df['close'] / df['close'].shift(1))
+            df[f'realized_vol_{period}'] = returns.rolling(period).std() * np.sqrt(period)
         
-        return ll
+        # Volatility of volatility
+        df['vol_of_vol'] = df['realized_vol_24'].rolling(24).std()
+        
+        # Parkinson volatility (using high-low)
+        df['parkinson_vol'] = np.sqrt(0.25 * np.log(df['high']/df['low'])**2)
+        
+        # Garman-Klass volatility
+        df['gk_vol'] = np.sqrt(0.5 * np.log(df['high']/df['low'])**2 - 
+                              (2*np.log(2)-1) * np.log(df['close']/df['open'])**2)
+        
+        return df
     
-    def _determine_market_structure(self, df: pd.DataFrame) -> pd.Series:
-        """Determine market structure trend"""
-        structure = pd.Series('ranging', index=df.index)
+    def _create_technical_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Create diverse technical indicators"""
+        # Trend indicators
+        df['sma_10'] = talib.SMA(df['close'].values, timeperiod=10)
+        df['sma_50'] = talib.SMA(df['close'].values, timeperiod=50)
+        df['ema_12'] = talib.EMA(df['close'].values, timeperiod=12)
+        df['ema_26'] = talib.EMA(df['close'].values, timeperiod=26)
         
-        if 'higher_highs' not in df.columns or 'lower_lows' not in df.columns:
-            return structure
+        # MACD family
+        df['macd'], df['macd_signal'], df['macd_hist'] = talib.MACD(df['close'].values)
+        df['macd_normalized'] = df['macd'] / df['close']
         
-        hh = df['higher_highs']
-        ll = df['lower_lows']
+        # Oscillators (but we'll orthogonalize these)
+        df['rsi_14'] = talib.RSI(df['close'].values, timeperiod=14)
+        df['stoch_k'], df['stoch_d'] = talib.STOCH(df['high'].values, df['low'].values, 
+                                                  df['close'].values)
+        df['cci'] = talib.CCI(df['high'].values, df['low'].values, df['close'].values)
         
-        # Look at recent 30 periods
-        lookback = 30
-        for i in range(lookback, len(df)):
-            recent_hh = hh.iloc[i-lookback:i+1].sum()
-            recent_ll = ll.iloc[i-lookback:i+1].sum()
-            
-            if recent_hh >= 2 and recent_hh > recent_ll:
-                structure.iloc[i] = 'bullish'
-            elif recent_ll >= 2 and recent_ll > recent_hh:
-                structure.iloc[i] = 'bearish'
-            else:
-                structure.iloc[i] = 'ranging'
+        # Bollinger Bands
+        df['bb_upper'], df['bb_middle'], df['bb_lower'] = talib.BBANDS(df['close'].values)
+        df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
+        df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']
         
-        return structure
+        # Trend strength
+        df['adx'] = talib.ADX(df['high'].values, df['low'].values, df['close'].values)
+        df['di_plus'] = talib.PLUS_DI(df['high'].values, df['low'].values, df['close'].values)
+        df['di_minus'] = talib.MINUS_DI(df['high'].values, df['low'].values, df['close'].values)
+        
+        return df
     
-    def _calculate_sr_levels(self, df: pd.DataFrame, window: int = 50) -> Tuple[pd.Series, pd.Series]:
-        """Calculate dynamic support and resistance levels"""
-        support = pd.Series(index=df.index, dtype=float)
-        resistance = pd.Series(index=df.index, dtype=float)
+    def _create_microstructure_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Create market microstructure features"""
+        # Order flow proxies
+        df['buy_pressure'] = np.where(df['close'] > df['open'], df['volume'], 0)
+        df['sell_pressure'] = np.where(df['close'] < df['open'], df['volume'], 0)
+        df['net_pressure'] = df['buy_pressure'] - df['sell_pressure']
         
-        for i in range(window, len(df)):
-            lookback_data = df.iloc[i-window:i+1]
-            
-            # Find significant levels using rolling minima/maxima
-            support.iloc[i] = lookback_data['low'].rolling(10).min().min()
-            resistance.iloc[i] = lookback_data['high'].rolling(10).max().max()
+        # Price impact features
+        df['price_impact'] = abs(df['close'].pct_change()) / (df['volume'] / df['volume'].rolling(20).mean())
         
-        return support, resistance
+        # Tick direction
+        df['tick_direction'] = np.sign(df['close'].diff())
+        df['tick_runs'] = (df['tick_direction'] != df['tick_direction'].shift()).cumsum()
+        
+        # Support/Resistance levels
+        df['recent_high'] = df['high'].rolling(20).max()
+        df['recent_low'] = df['low'].rolling(20).min()
+        df['resistance_distance'] = (df['recent_high'] - df['close']) / df['close']
+        df['support_distance'] = (df['close'] - df['recent_low']) / df['close']
+        
+        return df
     
-    def detect_smart_money_patterns(self, df: pd.DataFrame) -> Dict:
-        """Simplified but robust smart money pattern detection"""
-        patterns = {
-            'liquidity_sweeps': [],
-            'fair_value_gaps': [],
-            'order_blocks': [],
-            'imbalances': []
-        }
+    def _create_momentum_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Create momentum and trend features"""
+        # ROC (Rate of Change)
+        for period in [5, 10, 20]:
+            df[f'roc_{period}'] = talib.ROC(df['close'].values, timeperiod=period)
         
+        # Williams %R
+        df['williams_r'] = talib.WILLR(df['high'].values, df['low'].values, 
+                                      df['close'].values)
+        
+        # Momentum
+        for period in [10, 20]:
+            df[f'momentum_{period}'] = talib.MOM(df['close'].values, timeperiod=period)
+        
+        # Trend consistency
+        for period in [10, 20]:
+            df[f'trend_consistency_{period}'] = (df['close'] > df['close'].shift(1)).rolling(period).sum() / period
+        
+        # Moving average convergence
+        df['ma_convergence'] = (df['sma_10'] - df['sma_50']) / df['sma_50']
+        
+        return df
+    
+    def _create_statistical_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Create statistical features"""
+        # Skewness and kurtosis of returns
+        for period in [20, 50]:
+            returns = df['close'].pct_change()
+            df[f'return_skew_{period}'] = returns.rolling(period).skew()
+            df[f'return_kurtosis_{period}'] = returns.rolling(period).kurt()
+        
+        # Autocorrelation
+        for lag in [1, 5, 10]:
+            df[f'autocorr_lag_{lag}'] = df['close'].pct_change().rolling(50).apply(
+                lambda x: x.autocorr(lag=lag), raw=False)
+        
+        # Hurst exponent (trend persistence)
+        df['hurst_50'] = df['close'].rolling(50).apply(self._calculate_hurst, raw=False)
+        
+        # Entropy (randomness measure)
+        df['entropy_20'] = df['close'].pct_change().rolling(20).apply(
+            lambda x: stats.entropy(np.histogram(x.dropna(), bins=10)[0] + 1e-10), raw=False)
+        
+        return df
+    
+    def _calculate_vwap(self, df: pd.DataFrame, period: int) -> pd.Series:
+        """Calculate VWAP over rolling period"""
+        typical_price = (df['high'] + df['low'] + df['close']) / 3
+        return (typical_price * df['volume']).rolling(period).sum() / df['volume'].rolling(period).sum()
+    
+    def _calculate_hurst(self, price_series) -> float:
+        """Calculate Hurst exponent"""
         try:
-            # 1. Liquidity Sweeps (simplified and more reliable)
-            patterns['liquidity_sweeps'] = self._detect_liquidity_sweeps_v2(df)
+            if len(price_series) < 10:
+                return 0.5
             
-            # 2. Fair Value Gaps (corrected implementation)
-            patterns['fair_value_gaps'] = self._detect_fair_value_gaps_v2(df)
+            lags = range(2, min(20, len(price_series) // 2))
+            tau = [np.sqrt(np.std(np.subtract(price_series[lag:], price_series[:-lag]))) for lag in lags]
+            poly = np.polyfit(np.log(lags), np.log(tau), 1)
+            return poly[0] * 2.0
+        except:
+            return 0.5
+    
+    def _create_target_variable(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Create target variable for ML models"""
+        # Future return prediction
+        df['target_return'] = df['close'].shift(-self.prediction_horizon).pct_change(self.prediction_horizon)
+        
+        # Binary classification targets
+        df['target_up'] = (df['target_return'] > 0.02).astype(int)  # 2% threshold
+        df['target_down'] = (df['target_return'] < -0.02).astype(int)
+        
+        # Multi-class target
+        conditions = [
+            df['target_return'] > 0.03,  # Strong up
+            df['target_return'] > 0.01,  # Weak up
+            df['target_return'] < -0.03,  # Strong down
+            df['target_return'] < -0.01   # Weak down
+        ]
+        choices = [3, 1, -3, -1]  # Strong up, weak up, strong down, weak down
+        df['target_class'] = np.select(conditions, choices, default=0)  # Neutral
+        
+        return df
+    
+    def orthogonalize_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Apply Gram-Schmidt orthogonalization to correlated features"""
+        try:
+            # Identify feature columns (exclude price data and targets)
+            feature_cols = [col for col in df.columns if not any(x in col.lower() for x in 
+                          ['open', 'high', 'low', 'close', 'volume', 'timestamp', 'target'])]
             
-            # 3. Order Blocks (institutional footprints)
-            patterns['order_blocks'] = self._detect_order_blocks(df)
+            if len(feature_cols) < 2:
+                return df
             
-            # 4. Imbalances (single-print areas)
-            patterns['imbalances'] = self._detect_imbalances_v2(df)
+            # Get feature data
+            feature_data = df[feature_cols].fillna(method='ffill').fillna(0)
             
-            return patterns
+            # Calculate correlation matrix
+            corr_matrix = feature_data.corr().abs()
+            
+            # Find highly correlated feature groups
+            highly_correlated_groups = self._find_correlated_groups(corr_matrix, self.orthogonal_threshold)
+            
+            # Apply orthogonalization to each group
+            orthogonal_features = feature_data.copy()
+            
+            for group in highly_correlated_groups:
+                if len(group) > 1:
+                    group_data = feature_data[group].values
+                    # Apply QR decomposition
+                    q, r = qr(group_data.T, mode='economic')
+                    orthogonal_data = q.T
+                    
+                    # Replace original features with orthogonal ones
+                    for i, feature in enumerate(group):
+                        if i < orthogonal_data.shape[0]:
+                            orthogonal_features[f"{feature}_orth"] = orthogonal_data[i, :]
+                            orthogonal_features.drop(feature, axis=1, inplace=True)
+            
+            # Update dataframe
+            for col in orthogonal_features.columns:
+                if col not in df.columns:
+                    df[col] = orthogonal_features[col]
+                elif col in feature_cols:
+                    df[col] = orthogonal_features[col]
+            
+            logger.info(f"Orthogonalized {len(highly_correlated_groups)} feature groups")
+            return df
             
         except Exception as e:
-            logger.error(f"Error detecting smart money patterns: {e}")
-            return patterns
+            logger.error(f"Error in feature orthogonalization: {e}")
+            return df
     
-    def _detect_liquidity_sweeps_v2(self, df: pd.DataFrame, lookback: int = 30) -> List[Dict]:
-        """Improved liquidity sweep detection"""
-        sweeps = []
+    def _find_correlated_groups(self, corr_matrix: pd.DataFrame, threshold: float) -> List[List[str]]:
+        """Find groups of highly correlated features"""
+        groups = []
+        processed = set()
         
-        for i in range(lookback, len(df) - 2):
-            recent_data = df.iloc[i-lookback:i]
-            current_candle = df.iloc[i]
-            next_candle = df.iloc[i+1]
-            
-            # High sweep detection
-            recent_high = recent_data['high'].max()
-            if (current_candle['high'] > recent_high * 1.002 and  # Clear break
-                current_candle['close'] < current_candle['open'] and  # Rejection
-                next_candle['close'] < current_candle['close']):  # Follow-through
-                
-                sweeps.append({
-                    'type': 'high_sweep',
-                    'price': current_candle['high'],
-                    'index': i,
-                    'strength': (current_candle['high'] - recent_high) / recent_high * 100,
-                    'volume_confirmation': current_candle['volume'] > df['volume'].iloc[i-5:i].mean()
-                })
-            
-            # Low sweep detection
-            recent_low = recent_data['low'].min()
-            if (current_candle['low'] < recent_low * 0.998 and  # Clear break
-                current_candle['close'] > current_candle['open'] and  # Rejection
-                next_candle['close'] > current_candle['close']):  # Follow-through
-                
-                sweeps.append({
-                    'type': 'low_sweep',
-                    'price': current_candle['low'],
-                    'index': i,
-                    'strength': (recent_low - current_candle['low']) / recent_low * 100,
-                    'volume_confirmation': current_candle['volume'] > df['volume'].iloc[i-5:i].mean()
-                })
-        
-        return sweeps[-5:]  # Keep only recent sweeps
-    
-    def _detect_fair_value_gaps_v2(self, df: pd.DataFrame) -> List[Dict]:
-        """Corrected Fair Value Gap detection"""
-        fvgs = []
-        
-        for i in range(2, len(df)):
-            candle1 = df.iloc[i-2]
-            candle2 = df.iloc[i-1]
-            candle3 = df.iloc[i]
-            
-            # Bullish FVG: gap between candle1's high and candle3's low
-            if candle1['high'] < candle3['low']:
-                gap_size = (candle3['low'] - candle1['high']) / candle1['high'] * 100
-                
-                # Only significant gaps (> 0.1%)
-                if gap_size > 0.1:
-                    fvgs.append({
-                        'type': 'bullish_fvg',
-                        'top': candle3['low'],
-                        'bottom': candle1['high'],
-                        'index': i,
-                        'size_pct': gap_size,
-                        'filled': df['close'].iloc[-1] <= candle1['high']
-                    })
-            
-            # Bearish FVG: gap between candle1's low and candle3's high
-            elif candle1['low'] > candle3['high']:
-                gap_size = (candle1['low'] - candle3['high']) / candle1['low'] * 100
-                
-                if gap_size > 0.1:
-                    fvgs.append({
-                        'type': 'bearish_fvg',
-                        'top': candle1['low'],
-                        'bottom': candle3['high'],
-                        'index': i,
-                        'size_pct': gap_size,
-                        'filled': df['close'].iloc[-1] >= candle1['low']
-                    })
-        
-        return fvgs[-10:]
-    
-    def _detect_order_blocks(self, df: pd.DataFrame, min_body_pct: float = 0.5) -> List[Dict]:
-        """Detect institutional order blocks"""
-        order_blocks = []
-        
-        for i in range(10, len(df)):
-            candle = df.iloc[i]
-            
-            # Calculate candle body
-            body_size = abs(candle['close'] - candle['open'])
-            total_size = candle['high'] - candle['low']
-            
-            if total_size == 0:
+        for feature in corr_matrix.columns:
+            if feature in processed:
                 continue
             
-            body_pct = body_size / total_size
+            # Find features correlated with current feature
+            correlated = corr_matrix[feature][corr_matrix[feature] > threshold].index.tolist()
+            correlated = [f for f in correlated if f not in processed]
             
-            # Strong bearish order block
-            if (candle['close'] < candle['open'] and  # Bearish candle
-                body_pct > min_body_pct and  # Strong body
-                candle['volume'] > df['volume'].iloc[i-5:i].mean() * 1.5):  # High volume
-                
-                # Check if price has moved away significantly
-                future_low = df['low'].iloc[i+1:i+20].min() if i+20 < len(df) else df['low'].iloc[i+1:].min()
-                if future_low < candle['low'] * 0.99:  # 1% move away
-                    order_blocks.append({
-                        'type': 'bearish_ob',
-                        'top': candle['open'],
-                        'bottom': candle['close'],
-                        'index': i,
-                        'volume': candle['volume'],
-                        'tested': df['high'].iloc[i+1:].max() >= candle['close'] if i+1 < len(df) else False
-                    })
-            
-            # Strong bullish order block
-            elif (candle['close'] > candle['open'] and  # Bullish candle
-                  body_pct > min_body_pct and  # Strong body
-                  candle['volume'] > df['volume'].iloc[i-5:i].mean() * 1.5):  # High volume
-                
-                future_high = df['high'].iloc[i+1:i+20].max() if i+20 < len(df) else df['high'].iloc[i+1:].max()
-                if future_high > candle['high'] * 1.01:  # 1% move away
-                    order_blocks.append({
-                        'type': 'bullish_ob',
-                        'top': candle['close'],
-                        'bottom': candle['open'],
-                        'index': i,
-                        'volume': candle['volume'],
-                        'tested': df['low'].iloc[i+1:].min() <= candle['close'] if i+1 < len(df) else False
-                    })
+            if len(correlated) > 1:
+                groups.append(correlated)
+                processed.update(correlated)
         
-        return order_blocks[-8:]
+        return groups
     
-    def _detect_imbalances_v2(self, df: pd.DataFrame) -> List[Dict]:
-        """Detect price imbalances (gaps)"""
-        imbalances = []
-        
-        for i in range(1, len(df)):
-            prev_candle = df.iloc[i-1]
-            curr_candle = df.iloc[i]
-            
-            # Bullish imbalance
-            if curr_candle['low'] > prev_candle['high']:
-                gap_size = (curr_candle['low'] - prev_candle['high']) / prev_candle['high'] * 100
-                if gap_size > 0.05:  # Significant gap
-                    imbalances.append({
-                        'type': 'bullish_imbalance',
-                        'top': curr_candle['low'],
-                        'bottom': prev_candle['high'],
-                        'index': i,
-                        'size_pct': gap_size,
-                        'filled': df['close'].iloc[-1] <= prev_candle['high']
-                    })
-            
-            # Bearish imbalance
-            elif curr_candle['high'] < prev_candle['low']:
-                gap_size = (prev_candle['low'] - curr_candle['high']) / prev_candle['low'] * 100
-                if gap_size > 0.05:
-                    imbalances.append({
-                        'type': 'bearish_imbalance',
-                        'top': prev_candle['low'],
-                        'bottom': curr_candle['high'],
-                        'index': i,
-                        'size_pct': gap_size,
-                        'filled': df['close'].iloc[-1] >= prev_candle['low']
-                    })
-        
-        return imbalances[-8:]
-    
-    async def get_order_book_analysis(self, symbol: str) -> Dict:
-        """Enhanced order book analysis with institutional detection"""
+    def select_features(self, df: pd.DataFrame, target_col: str = 'target_return') -> Tuple[pd.DataFrame, List[str]]:
+        """Advanced feature selection using multiple methods"""
         try:
-            order_book = self.exchange.fetch_order_book(symbol, limit=100)
+            # Get feature columns
+            feature_cols = [col for col in df.columns if not any(x in col.lower() for x in 
+                          ['open', 'high', 'low', 'close', 'volume', 'timestamp', 'target'])]
             
-            if not order_book.get('bids') or not order_book.get('asks'):
+            if len(feature_cols) < self.feature_selection_k:
+                return df, feature_cols
+            
+            # Prepare data
+            X = df[feature_cols].fillna(method='ffill').fillna(0)
+            y = df[target_col].fillna(0)
+            
+            # Remove rows with infinite values
+            mask = np.isfinite(X).all(axis=1) & np.isfinite(y)
+            X = X[mask]
+            y = y[mask]
+            
+            if len(X) < 50:
+                return df, feature_cols[:self.feature_selection_k]
+            
+            # Method 1: Random Forest feature importance
+            rf = RandomForestRegressor(n_estimators=50, random_state=42, n_jobs=-1)
+            rf.fit(X, y)
+            rf_importance = rf.feature_importances_
+            
+            # Method 2: Mutual information
+            mi_scores = mutual_info_regression(X, y, random_state=42)
+            
+            # Method 3: Statistical correlation
+            correlations = abs(X.corrwith(y))
+            
+            # Combine scores (normalized)
+            rf_importance = rf_importance / rf_importance.sum()
+            mi_scores = mi_scores / mi_scores.sum() if mi_scores.sum() > 0 else mi_scores
+            correlations = correlations / correlations.sum() if correlations.sum() > 0 else correlations
+            
+            # Weighted combination
+            combined_scores = (0.5 * rf_importance + 0.3 * mi_scores + 0.2 * correlations.values)
+            
+            # Select top features
+            top_indices = np.argsort(combined_scores)[-self.feature_selection_k:]
+            selected_features = [feature_cols[i] for i in top_indices]
+            
+            logger.info(f"Selected {len(selected_features)} features from {len(feature_cols)}")
+            return df, selected_features
+            
+        except Exception as e:
+            logger.error(f"Error in feature selection: {e}")
+            return df, feature_cols[:self.feature_selection_k]
+    
+    def train_model(self, df: pd.DataFrame, symbol: str) -> Dict:
+        """Train ML model with time series validation"""
+        try:
+            # Engineer features
+            df = self.engineer_features(df)
+            
+            # Orthogonalize features
+            df = self.orthogonalize_features(df)
+            
+            # Select features
+            df, selected_features = self.select_features(df)
+            
+            # Prepare data
+            X = df[selected_features].fillna(method='ffill').fillna(0)
+            y = df['target_return'].fillna(0)
+            
+            # Remove infinite values
+            mask = np.isfinite(X).all(axis=1) & np.isfinite(y)
+            X = X[mask]
+            y = y[mask]
+            
+            if len(X) < 100:
+                logger.warning(f"Insufficient data for {symbol}")
                 return {}
             
-            bids = np.array(order_book['bids'])
-            asks = np.array(order_book['asks'])
+            # Time series split for validation
+            tscv = TimeSeriesSplit(n_splits=self.cv_folds)
             
-            # Basic metrics
-            total_bid_volume = np.sum(bids[:, 1])
-            total_ask_volume = np.sum(asks[:, 1])
-            total_volume = total_bid_volume + total_ask_volume
+            # Initialize models
+            models = {
+                'rf': RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1),
+                'gbm': GradientBoostingRegressor(n_estimators=100, random_state=42)
+            }
             
-            if total_volume == 0:
-                return {}
+            # Train and validate models
+            best_model = None
+            best_score = float('inf')
+            cv_scores = {}
             
-            bid_pressure = total_bid_volume / total_volume
-            spread_pct = ((asks[0][0] - bids[0][0]) / asks[0][0]) * 100
+            for name, model in models.items():
+                scores = []
+                for train_idx, val_idx in tscv.split(X):
+                    X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+                    y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+                    
+                    # Scale features
+                    scaler = RobustScaler()
+                    X_train_scaled = pd.DataFrame(scaler.fit_transform(X_train), 
+                                                columns=X_train.columns, index=X_train.index)
+                    X_val_scaled = pd.DataFrame(scaler.transform(X_val), 
+                                              columns=X_val.columns, index=X_val.index)
+                    
+                    # Train model
+                    model.fit(X_train_scaled, y_train)
+                    
+                    # Predict and score
+                    y_pred = model.predict(X_val_scaled)
+                    score = mean_squared_error(y_val, y_pred)
+                    scores.append(score)
+                
+                avg_score = np.mean(scores)
+                cv_scores[name] = avg_score
+                
+                if avg_score < best_score:
+                    best_score = avg_score
+                    best_model = name
             
-            # Detect large orders (potential institutional activity)
-            bid_sizes = bids[:, 1]
-            ask_sizes = asks[:, 1]
+            # Train final model on all data
+            final_model = models[best_model]
+            scaler = RobustScaler()
+            X_scaled = pd.DataFrame(scaler.fit_transform(X), columns=X.columns, index=X.index)
+            final_model.fit(X_scaled, y)
             
-            bid_threshold = np.percentile(bid_sizes, 90)
-            ask_threshold = np.percentile(ask_sizes, 90)
+            # Get feature importance
+            if hasattr(final_model, 'feature_importances_'):
+                feature_importance = dict(zip(selected_features, final_model.feature_importances_))
+            else:
+                feature_importance = {}
             
-            large_bids = bids[bids[:, 1] > bid_threshold]
-            large_asks = asks[asks[:, 1] > ask_threshold]
+            # Calculate SHAP values (for top 10 features only to save time)
+            shap_importance = {}
+            try:
+                top_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)[:10]
+                top_feature_names = [f[0] for f in top_features]
+                X_sample = X_scaled[top_feature_names].tail(100)  # Last 100 samples
+                
+                explainer = shap.Explainer(final_model, X_sample)
+                shap_values = explainer(X_sample)
+                shap_importance = dict(zip(top_feature_names, np.abs(shap_values.values).mean(axis=0)))
+            except Exception as e:
+                logger.warning(f"SHAP calculation failed for {symbol}: {e}")
             
-            # Order book imbalance at different levels
-            levels_5_bid = np.sum(bids[:5, 1])
-            levels_5_ask = np.sum(asks[:5, 1])
-            imbalance_5 = levels_5_bid / (levels_5_bid + levels_5_ask) if (levels_5_bid + levels_5_ask) > 0 else 0.5
+            # Store model artifacts
+            self.models[symbol] = final_model
+            self.scalers[symbol] = scaler
+            self.feature_selectors[symbol] = selected_features
+            self.feature_importance_history[symbol] = {
+                'feature_importance': feature_importance,
+                'shap_importance': shap_importance,
+                'cv_scores': cv_scores,
+                'best_model': best_model,
+                'best_score': best_score
+            }
+            
+            logger.info(f"Model trained for {symbol} - Best: {best_model}, Score: {best_score:.6f}")
             
             return {
-                'bid_pressure': round(bid_pressure, 3),
-                'ask_pressure': round(1 - bid_pressure, 3),
-                'spread_pct': round(spread_pct, 4),
-                'large_bid_count': len(large_bids),
-                'large_ask_count': len(large_asks),
-                'imbalance_5_levels': round(imbalance_5, 3),
-                'institutional_bias': 'bullish' if len(large_bids) > len(large_asks) else 'bearish',
-                'liquidity_score': min(total_bid_volume, total_ask_volume) / max(total_bid_volume, total_ask_volume)
+                'model': final_model,
+                'scaler': scaler,
+                'features': selected_features,
+                'importance': feature_importance,
+                'shap_importance': shap_importance,
+                'cv_score': best_score,
+                'model_type': best_model
             }
             
         except Exception as e:
-            logger.error(f"Error analyzing order book for {symbol}: {e}")
+            logger.error(f"Error training model for {symbol}: {e}")
             return {}
     
-    def calculate_signal_confluence(self, df: pd.DataFrame, smart_money: Dict, 
-                                  order_book: Dict) -> Dict:
-        """Simplified confluence calculation focusing on key factors"""
-        confluence = {
-            'direction': 'neutral',
-            'strength': 0.0,
-            'factors': [],
-            'score_breakdown': {}
-        }
-        
+    def predict_price_movement(self, df: pd.DataFrame, symbol: str) -> Dict:
+        """Make prediction using trained model"""
         try:
-            current_price = df['close'].iloc[-1]
-            scores = {'bullish': 0, 'bearish': 0}
+            if symbol not in self.models:
+                return {}
             
-            # 1. Trend Alignment (30% weight)
-            trend_score = self._analyze_trend_alignment(df, current_price)
-            scores['bullish'] += trend_score['bullish'] * 0.3
-            scores['bearish'] += trend_score['bearish'] * 0.3
-            confluence['factors'].extend(trend_score['factors'])
-            confluence['score_breakdown']['trend'] = trend_score
+            # Engineer features (same as training)
+            df = self.engineer_features(df)
+            df = self.orthogonalize_features(df)
             
-            # 2. Volume Confirmation (25% weight)
-            volume_score = self._analyze_volume_confirmation(df)
-            scores['bullish'] += volume_score['bullish'] * 0.25
-            scores['bearish'] += volume_score['bearish'] * 0.25
-            confluence['factors'].extend(volume_score['factors'])
-            confluence['score_breakdown']['volume'] = volume_score
+            # Use selected features
+            selected_features = self.feature_selectors[symbol]
+            X = df[selected_features].fillna(method='ffill').fillna(0).tail(1)
             
-            # 3. Smart Money Patterns (25% weight)
-            sm_score = self._analyze_smart_money_confluence(smart_money, current_price)
-            scores['bullish'] += sm_score['bullish'] * 0.25
-            scores['bearish'] += sm_score['bearish'] * 0.25
-            confluence['factors'].extend(sm_score['factors'])
-            confluence['score_breakdown']['smart_money'] = sm_score
+            # Scale features
+            scaler = self.scalers[symbol]
+            X_scaled = pd.DataFrame(scaler.transform(X), columns=X.columns, index=X.index)
             
-            # 4. Technical Confluence (20% weight)
-            tech_score = self._analyze_technical_confluence(df)
-            scores['bullish'] += tech_score['bullish'] * 0.2
-            scores['bearish'] += tech_score['bearish'] * 0.2
-            confluence['factors'].extend(tech_score['factors'])
-            confluence['score_breakdown']['technical'] = tech_score
+            # Make prediction
+            model = self.models[symbol]
+            prediction = model.predict(X_scaled)[0]
             
-            # Determine overall direction and strength
-            if scores['bullish'] > scores['bearish'] and scores['bullish'] > 0.6:
-                confluence['direction'] = 'bullish'
-                confluence['strength'] = scores['bullish']
-            elif scores['bearish'] > scores['bullish'] and scores['bearish'] > 0.6:
-                confluence['direction'] = 'bearish'
-                confluence['strength'] = scores['bearish']
-            else:
-                confluence['direction'] = 'neutral'
-                confluence['strength'] = max(scores['bullish'], scores['bearish'])
+            # Calculate confidence (based on model's training performance)
+            model_info = self.feature_importance_history[symbol]
+            base_confidence = 1.0 / (1.0 + model_info['best_score'])  # Convert MSE to confidence
             
-            return confluence
+            # Adjust confidence based on feature importance sum
+            feature_importance_sum = sum(model_info['feature_importance'].values())
+            confidence = base_confidence * min(1.0, feature_importance_sum / self.min_feature_importance_sum)
+            
+            return {
+                'prediction': prediction,
+                'confidence': confidence,
+                'feature_importance': model_info['feature_importance'],
+                'shap_importance': model_info['shap_importance'],
+                'model_type': model_info['best_model']
+            }
             
         except Exception as e:
-            logger.error(f"Error calculating confluence: {e}")
-            return confluence
+            logger.error(f"Error making prediction for {symbol}: {e}")
+            return {}
     
-    def _analyze_trend_alignment(self, df: pd.DataFrame, current_price: float) -> Dict:
-        """Analyze trend alignment"""
-        score = {'bullish': 0, 'bearish': 0, 'factors': []}
-        
+    async def generate_ml_signal(self, df: pd.DataFrame, symbol: str) -> Optional[TradingSignal]:
+        """Generate ML-based trading signal"""
         try:
-            # EMA alignment
-            if all(col in df.columns for col in ['ema_9', 'ema_21', 'ema_50']):
-                ema_9 = df['ema_9'].iloc[-1]
-                ema_21 = df['ema_21'].iloc[-1]
-                ema_50 = df['ema_50'].iloc[-1]
-                
-                # Perfect bullish alignment
-                if current_price > ema_9 > ema_21 > ema_50:
-                    score['bullish'] += 1.0
-                    score['factors'].append("Perfect EMA bullish alignment")
-                # Perfect bearish alignment
-                elif current_price < ema_9 < ema_21 < ema_50:
-                    score['bearish'] += 1.0
-                    score['factors'].append("Perfect EMA bearish alignment")
-                # Partial alignment
-                elif current_price > ema_21:
-                    score['bullish'] += 0.5
-                    score['factors'].append("Price above key EMA")
-                elif current_price < ema_21:
-                    score['bearish'] += 0.5
-                    score['factors'].append("Price below key EMA")
+            if len(df) < self.lookback_periods:
+                logger.warning(f"Insufficient data for {symbol}")
+                return None
             
-            # VWAP confirmation
-            if 'vwap' in df.columns:
-                vwap = df['vwap'].iloc[-1]
-                if current_price > vwap * 1.002:
-                    score['bullish'] += 0.3
-                    score['factors'].append("Price above VWAP")
-                elif current_price < vwap * 0.998:
-                    score['bearish'] += 0.3
-                    score['factors'].append("Price below VWAP")
+            # Train model if not exists or retrain periodically
+            if symbol not in self.models or len(df) % 100 == 0:  # Retrain every 100 periods
+                model_info = self.train_model(df, symbol)
+                if not model_info:
+                    return None
             
-            # Market structure
-            if 'market_structure' in df.columns:
-                structure = df['market_structure'].iloc[-1]
-                if structure == 'bullish':
-                    score['bullish'] += 0.4
-                    score['factors'].append("Bullish market structure")
-                elif structure == 'bearish':
-                    score['bearish'] += 0.4
-                    score['factors'].append("Bearish market structure")
+            # Make prediction
+            prediction_result = self.predict_price_movement(df, symbol)
+            if not prediction_result:
+                return None
             
-        except Exception as e:
-            logger.error(f"Error in trend alignment analysis: {e}")
-        
-        return score
-    
-    def _analyze_volume_confirmation(self, df: pd.DataFrame) -> Dict:
-        """Analyze volume confirmation"""
-        score = {'bullish': 0, 'bearish': 0, 'factors': []}
-        
-        try:
-            if 'volume_ratio' not in df.columns:
-                return score
+            prediction = prediction_result['prediction']
+            model_confidence = prediction_result['confidence']
             
-            volume_ratio = df['volume_ratio'].iloc[-1]
-            current_candle = df.iloc[-1]
-            price_change_pct = ((current_candle['close'] - current_candle['open']) / 
-                               current_candle['open']) * 100
-            
-            # High volume with direction
-            if volume_ratio > 2.0:
-                if price_change_pct > 0:
-                    score['bullish'] += 1.0
-                    score['factors'].append("High volume bullish candle")
-                else:
-                    score['bearish'] += 1.0
-                    score['factors'].append("High volume bearish candle")
-            elif volume_ratio > 1.5:
-                if price_change_pct > 0:
-                    score['bullish'] += 0.6
-                    score['factors'].append("Above-average volume bullish move")
-                else:
-                    score['bearish'] += 0.6
-                    score['factors'].append("Above-average volume bearish move")
-            
-            # Volume trend (last 3 candles)
-            recent_volume_trend = df['volume_ratio'].iloc[-3:].mean()
-            if recent_volume_trend > 1.3:
-                score['factors'].append("Sustained volume increase")
-                # Add small boost to whichever direction has more score
-                if score['bullish'] > score['bearish']:
-                    score['bullish'] += 0.2
-                elif score['bearish'] > score['bullish']:
-                    score['bearish'] += 0.2
-            
-        except Exception as e:
-            logger.error(f"Error in volume confirmation analysis: {e}")
-        
-        return score
-    
-    def _analyze_smart_money_confluence(self, smart_money: Dict, current_price: float) -> Dict:
-        """Analyze smart money pattern confluence"""
-        score = {'bullish': 0, 'bearish': 0, 'factors': []}
-        
-        try:
-            # Liquidity sweeps
-            sweeps = smart_money.get('liquidity_sweeps', [])
-            for sweep in sweeps[-2:]:  # Recent sweeps only
-                if sweep.get('volume_confirmation', False):
-                    if sweep['type'] == 'low_sweep':
-                        score['bullish'] += 0.4
-                        score['factors'].append("Recent liquidity sweep of lows")
-                    elif sweep['type'] == 'high_sweep':
-                        score['bearish'] += 0.4
-                        score['factors'].append("Recent liquidity sweep of highs")
-            
-            # Fair Value Gaps
-            fvgs = smart_money.get('fair_value_gaps', [])
-            for fvg in fvgs[-3:]:  # Recent FVGs
-                if not fvg.get('filled', True):
-                    if (fvg['type'] == 'bullish_fvg' and 
-                        fvg['bottom'] <= current_price <= fvg['top']):
-                        score['bullish'] += 0.5
-                        score['factors'].append("Price in bullish FVG")
-                    elif (fvg['type'] == 'bearish_fvg' and 
-                          fvg['bottom'] <= current_price <= fvg['top']):
-                        score['bearish'] += 0.5
-                        score['factors'].append("Price in bearish FVG")
-            
-            # Order blocks
-            order_blocks = smart_money.get('order_blocks', [])
-            for ob in order_blocks[-2:]:  # Recent order blocks
-                if not ob.get('tested', False):
-                    if (ob['type'] == 'bullish_ob' and 
-                        ob['bottom'] <= current_price <= ob['top']):
-                        score['bullish'] += 0.6
-                        score['factors'].append("Price at untested bullish order block")
-                    elif (ob['type'] == 'bearish_ob' and 
-                          ob['bottom'] <= current_price <= ob['top']):
-                        score['bearish'] += 0.6
-                        score['factors'].append("Price at untested bearish order block")
-            
-        except Exception as e:
-            logger.error(f"Error in smart money confluence analysis: {e}")
-        
-        return score
-    
-    def _analyze_technical_confluence(self, df: pd.DataFrame) -> Dict:
-        """Analyze technical indicator confluence"""
-        score = {'bullish': 0, 'bearish': 0, 'factors': []}
-        
-        try:
-            # RSI analysis
-            if 'rsi' in df.columns:
-                rsi = df['rsi'].iloc[-1]
-                if 30 < rsi < 45:
-                    score['bullish'] += 0.4
-                    score['factors'].append("RSI in bullish zone")
-                elif 55 < rsi < 70:
-                    score['bearish'] += 0.4
-                    score['factors'].append("RSI in bearish zone")
-                elif rsi < 30:
-                    score['bullish'] += 0.6
-                    score['factors'].append("RSI oversold")
-                elif rsi > 70:
-                    score['bearish'] += 0.6
-                    score['factors'].append("RSI overbought")
-            
-            # MACD momentum
-            if 'macd_hist' in df.columns and len(df) > 1:
-                macd_hist = df['macd_hist'].iloc[-1]
-                macd_prev = df['macd_hist'].iloc[-2]
-                
-                if macd_hist > 0 and macd_hist > macd_prev:
-                    score['bullish'] += 0.4
-                    score['factors'].append("MACD bullish momentum")
-                elif macd_hist < 0 and macd_hist < macd_prev:
-                    score['bearish'] += 0.4
-                    score['factors'].append("MACD bearish momentum")
-            
-            # Bollinger Bands
-            if all(col in df.columns for col in ['bb_upper', 'bb_lower']):
-                current_price = df['close'].iloc[-1]
-                bb_upper = df['bb_upper'].iloc[-1]
-                bb_lower = df['bb_lower'].iloc[-1]
-                
-                bb_position = (current_price - bb_lower) / (bb_upper - bb_lower)
-                
-                if bb_position <= 0.1:  # Near lower band
-                    score['bullish'] += 0.5
-                    score['factors'].append("Price near BB lower band")
-                elif bb_position >= 0.9:  # Near upper band
-                    score['bearish'] += 0.5
-                    score['factors'].append("Price near BB upper band")
-            
-        except Exception as e:
-            logger.error(f"Error in technical confluence analysis: {e}")
-        
-        return score
-    
-    async def generate_signal(self, df: pd.DataFrame, symbol: str) -> Optional[TradingSignal]:
-        """Generate high-quality trading signal"""
-        try:
-            if len(df) < 100:
+            # Quality gates
+            if (model_confidence < self.min_model_confidence or
+                abs(prediction) < 0.005):  # Minimum 1% predicted move
                 return None
             
             current_price = df['close'].iloc[-1]
             
-            # Pre-screening filters
-            volume_ratio = df['volume_ratio'].iloc[-1] if 'volume_ratio' in df.columns else 0
-            volatility = df['atr_pct'].iloc[-1] if 'atr_pct' in df.columns else 0
+            # Determine direction
+            direction = 'LONG' if prediction > 0 else 'SHORT'
             
-            if (volume_ratio < self.min_volume_surge or 
-                volatility < self.min_volatility):
-                return None
+            # Calculate position sizing and risk management
+            volatility = df['close'].pct_change().std() * np.sqrt(24)  # Daily volatility
+            atr_pct = (talib.ATR(df['high'].values, df['low'].values, df['close'].values, 14)[-1] / current_price)
             
-            # Get comprehensive analysis
-            smart_money = self.detect_smart_money_patterns(df)
-            order_book = await self.get_order_book_analysis(symbol)
-            confluence = self.calculate_signal_confluence(df, smart_money, order_book)
+            # Dynamic stop loss based on volatility and prediction confidence
+            base_stop_pct = max(0.015, atr_pct * 1.5)  # Minimum 1.5% or 1.5x ATR
+            confidence_multiplier = 2.0 - model_confidence  # Higher confidence = tighter stops
+            stop_pct = base_stop_pct * confidence_multiplier
             
-            # Quality gate
-            if (confluence['strength'] < 0.7 or 
-                confluence['direction'] == 'neutral' or
-                len(confluence['factors']) < 3):
-                return None
+            # Ensure max risk limit
+            stop_pct = min(stop_pct, self.max_risk_per_trade / 100)
             
-            # Generate signal based on direction
-            if confluence['direction'] == 'bullish':
-                signal = self._create_long_signal(df, symbol, confluence, smart_money)
+            if direction == 'LONG':
+                stop_loss = current_price * (1 - stop_pct)
+                # Take profit based on prediction and risk-reward ratio
+                min_tp = current_price * (1 + stop_pct * self.min_rr_ratio)
+                predicted_tp = current_price * (1 + abs(prediction))
+                take_profit = max(min_tp, predicted_tp)
             else:
-                signal = self._create_short_signal(df, symbol, confluence, smart_money)
+                stop_loss = current_price * (1 + stop_pct)
+                min_tp = current_price * (1 - stop_pct * self.min_rr_ratio)
+                predicted_tp = current_price * (1 - abs(prediction))
+                take_profit = min(min_tp, predicted_tp)
             
-            return signal
+            # Calculate final metrics
+            if direction == 'LONG':
+                risk = current_price - stop_loss
+                reward = take_profit - current_price
+            else:
+                risk = stop_loss - current_price
+                reward = current_price - take_profit
+            
+            rr_ratio = reward / risk if risk > 0 else 0
+            
+            if rr_ratio < self.min_rr_ratio:
+                return None
+            
+            # Determine signal strength based on ML metrics
+            if model_confidence > 0.9 and abs(prediction) > 0.05:
+                strength = SignalStrength.INSTITUTIONAL
+            elif model_confidence > 0.8 and abs(prediction) > 0.03:
+                strength = SignalStrength.STRONG
+            else:
+                strength = SignalStrength.MODERATE
+            
+            # Create confluence factors from top features
+            feature_importance = prediction_result['feature_importance']
+            top_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)[:5]
+            confluence_factors = [f"ML Feature: {feature} (imp: {importance:.3f})" 
+                                for feature, importance in top_features]
+            
+            signal_id = f"{symbol.replace('/', '')}_{int(datetime.now().timestamp())}_ML_{direction[0]}"
+            
+            return TradingSignal(
+                signal_id=signal_id,
+                timestamp=datetime.now().isoformat(),
+                coin=symbol.replace('/USDT', ''),
+                direction=direction,
+                entry_price=round(current_price, 6),
+                current_price=round(current_price, 6),
+                take_profit=round(take_profit, 6),
+                stop_loss=round(stop_loss, 6),
+                confidence=min(95, int(model_confidence * 100)),
+                strength=strength,
+                risk_reward_ratio=round(rr_ratio, 2),
+                risk_percentage=round(stop_pct * 100, 2),
+                analysis_summary={
+                    'ml_prediction': round(prediction, 4),
+                    'model_confidence': round(model_confidence, 3),
+                    'model_type': prediction_result['model_type'],
+                    'volatility': round(volatility, 4),
+                    'atr_pct': round(atr_pct, 4)
+                },
+                confluence_factors=confluence_factors,
+                ml_prediction=prediction,
+                feature_importance=feature_importance,
+                model_confidence=model_confidence
+            )
             
         except Exception as e:
-            logger.error(f"Error generating signal for {symbol}: {e}")
+            logger.error(f"Error generating ML signal for {symbol}: {e}")
             return None
     
-    def _create_long_signal(self, df: pd.DataFrame, symbol: str, 
-                           confluence: Dict, smart_money: Dict) -> TradingSignal:
-        """Create optimized LONG signal"""
-        current_price = df['close'].iloc[-1]
-        atr = df['atr'].iloc[-1] if 'atr' in df.columns else current_price * 0.02
-        
-        entry_price = current_price
-        
-        # Smart stop loss calculation
-        stop_candidates = []
-        
-        # ATR-based stop
-        stop_candidates.append(entry_price - (atr * 1.8))
-        
-        # Support level stop
-        if 'support' in df.columns and pd.notna(df['support'].iloc[-1]):
-            support = df['support'].iloc[-1]
-            stop_candidates.append(support * 0.997)
-        
-        # Smart money level stops
-        sweeps = smart_money.get('liquidity_sweeps', [])
-        low_sweeps = [s for s in sweeps if s['type'] == 'low_sweep'][-1:]
-        if low_sweeps:
-            stop_candidates.append(low_sweeps[0]['price'] * 0.995)
-        
-        # Use the highest (most conservative) stop
-        stop_loss = max(stop_candidates) if stop_candidates else entry_price * 0.985
-        
-        # Ensure max risk limit
-        risk_pct = ((entry_price - stop_loss) / entry_price) * 100
-        if risk_pct > self.max_risk_per_trade:
-            stop_loss = entry_price * (1 - self.max_risk_per_trade / 100)
-        
-        # Calculate take profit
-        risk = entry_price - stop_loss
-        
-        # Dynamic R:R based on confluence strength
-        if confluence['strength'] > 0.85:
-            rr_ratio = 4.0  # High confidence
-        elif confluence['strength'] > 0.75:
-            rr_ratio = 3.0
-        else:
-            rr_ratio = 2.5  # Minimum
-        
-        take_profit = entry_price + (risk * rr_ratio)
-        
-        # Adjust for resistance
-        if 'resistance' in df.columns and pd.notna(df['resistance'].iloc[-1]):
-            resistance = df['resistance'].iloc[-1]
-            if take_profit > resistance:
-                take_profit = resistance * 0.995
-        
-        # Final validation
-        final_rr = (take_profit - entry_price) / (entry_price - stop_loss)
-        if final_rr < self.min_rr_ratio:
-            take_profit = entry_price + (risk * self.min_rr_ratio)
-        
-        signal_id = f"{symbol.replace('/', '')}_{int(datetime.now().timestamp())}_L"
-        
-        # Determine signal strength
-        strength = SignalStrength.INSTITUTIONAL if confluence['strength'] > 0.85 else \
-                  SignalStrength.STRONG if confluence['strength'] > 0.75 else \
-                  SignalStrength.MODERATE
-        
-        return TradingSignal(
-            signal_id=signal_id,
-            timestamp=datetime.now().isoformat(),
-            coin=symbol.replace('/USDT', ''),
-            direction='LONG',
-            entry_price=round(entry_price, 6),
-            current_price=round(current_price, 6),
-            take_profit=round(take_profit, 6),
-            stop_loss=round(stop_loss, 6),
-            confidence=min(95, int(confluence['strength'] * 100)),
-            strength=strength,
-            risk_reward_ratio=round(final_rr, 2),
-            risk_percentage=round(((entry_price - stop_loss) / entry_price) * 100, 2),
-            analysis_summary={
-                'confluence_score': round(confluence['strength'], 3),
-                'volume_confirmation': round(df['volume_ratio'].iloc[-1], 2) if 'volume_ratio' in df.columns else 1,
-                'smart_money_signals': len([p for patterns in smart_money.values() if isinstance(patterns, list) for p in patterns]),
-                'market_structure': df['market_structure'].iloc[-1] if 'market_structure' in df.columns else 'unknown'
-            },
-            confluence_factors=confluence['factors']
-        )
-    
-    def _create_short_signal(self, df: pd.DataFrame, symbol: str, 
-                            confluence: Dict, smart_money: Dict) -> TradingSignal:
-        """Create optimized SHORT signal"""
-        current_price = df['close'].iloc[-1]
-        atr = df['atr'].iloc[-1] if 'atr' in df.columns else current_price * 0.02
-        
-        entry_price = current_price
-        
-        # Smart stop loss calculation
-        stop_candidates = []
-        
-        # ATR-based stop
-        stop_candidates.append(entry_price + (atr * 1.8))
-        
-        # Resistance level stop
-        if 'resistance' in df.columns and pd.notna(df['resistance'].iloc[-1]):
-            resistance = df['resistance'].iloc[-1]
-            stop_candidates.append(resistance * 1.003)
-        
-        # Smart money level stops
-        sweeps = smart_money.get('liquidity_sweeps', [])
-        high_sweeps = [s for s in sweeps if s['type'] == 'high_sweep'][-1:]
-        if high_sweeps:
-            stop_candidates.append(high_sweeps[0]['price'] * 1.005)
-        
-        # Use the lowest (most conservative) stop
-        stop_loss = min(stop_candidates) if stop_candidates else entry_price * 1.015
-        
-        # Ensure max risk limit
-        risk_pct = ((stop_loss - entry_price) / entry_price) * 100
-        if risk_pct > self.max_risk_per_trade:
-            stop_loss = entry_price * (1 + self.max_risk_per_trade / 100)
-        
-        # Calculate take profit
-        risk = stop_loss - entry_price
-        
-        # Dynamic R:R based on confluence strength
-        if confluence['strength'] > 0.85:
-            rr_ratio = 4.0
-        elif confluence['strength'] > 0.75:
-            rr_ratio = 3.0
-        else:
-            rr_ratio = 2.5
-        
-        take_profit = entry_price - (risk * rr_ratio)
-        
-        # Adjust for support
-        if 'support' in df.columns and pd.notna(df['support'].iloc[-1]):
-            support = df['support'].iloc[-1]
-            if take_profit < support:
-                take_profit = support * 1.005
-        
-        # Final validation
-        final_rr = (entry_price - take_profit) / (stop_loss - entry_price)
-        if final_rr < self.min_rr_ratio:
-            take_profit = entry_price - (risk * self.min_rr_ratio)
-        
-        signal_id = f"{symbol.replace('/', '')}_{int(datetime.now().timestamp())}_S"
-        
-        # Determine signal strength
-        strength = SignalStrength.INSTITUTIONAL if confluence['strength'] > 0.85 else \
-                  SignalStrength.STRONG if confluence['strength'] > 0.75 else \
-                  SignalStrength.MODERATE
-        
-        return TradingSignal(
-            signal_id=signal_id,
-            timestamp=datetime.now().isoformat(),
-            coin=symbol.replace('/USDT', ''),
-            direction='SHORT',
-            entry_price=round(entry_price, 6),
-            current_price=round(current_price, 6),
-            take_profit=round(take_profit, 6),
-            stop_loss=round(stop_loss, 6),
-            confidence=min(95, int(confluence['strength'] * 100)),
-            strength=strength,
-            risk_reward_ratio=round(final_rr, 2),
-            risk_percentage=round(((stop_loss - entry_price) / entry_price) * 100, 2),
-            analysis_summary={
-                'confluence_score': round(confluence['strength'], 3),
-                'volume_confirmation': round(df['volume_ratio'].iloc[-1], 2) if 'volume_ratio' in df.columns else 1,
-                'smart_money_signals': len([p for patterns in smart_money.values() if isinstance(patterns, list) for p in patterns]),
-                'market_structure': df['market_structure'].iloc[-1] if 'market_structure' in df.columns else 'unknown'
-            },
-            confluence_factors=confluence['factors']
-        )
-    
     async def scan_all_coins(self) -> List[Dict]:
-        """Production-ready coin scanning"""
+        """Scan all coins using ML approach"""
         signals = []
         processed_count = 0
         
-        # Randomize scanning order to avoid bias
+        # Randomize order
         import random
         coins_to_scan = self.coins.copy()
         random.shuffle(coins_to_scan)
         
-        logger.info(f"Starting production scan of {len(coins_to_scan)} coins")
+        logger.info(f"Starting ML scan of {len(coins_to_scan)} coins")
         
         for symbol in coins_to_scan:
             try:
@@ -1079,21 +898,16 @@ class ProductionTradingAnalyzer:
                 
                 processed_count += 1
                 
-                # Get market data
-                df = await self.get_market_data(symbol, '1h', 200)
-                if df.empty:
+                # Get extended market data for ML
+                df = await self.get_market_data(symbol, '1h', self.lookback_periods)
+                if df.empty or len(df) < self.lookback_periods:
                     continue
                 
-                # Calculate indicators
-                df = self.calculate_technical_indicators(df)
-                if len(df) < 50:
-                    continue
-                
-                # Generate signal
-                signal = await self.generate_signal(df, symbol)
+                # Generate ML signal
+                signal = await self.generate_ml_signal(df, symbol)
                 
                 if signal:
-                    # Convert to dict for compatibility
+                    # Convert to dict
                     signal_dict = {
                         'signal_id': signal.signal_id,
                         'timestamp': signal.timestamp,
@@ -1105,65 +919,74 @@ class ProductionTradingAnalyzer:
                         'stop_loss': signal.stop_loss,
                         'confidence': signal.confidence,
                         'analysis_data': {
-                            'confluence_score': signal.analysis_summary['confluence_score'],
+                            'ml_prediction': signal.analysis_summary['ml_prediction'],
+                            'model_confidence': signal.analysis_summary['model_confidence'],
+                            'model_type': signal.analysis_summary['model_type'],
                             'confluence_factors': signal.confluence_factors,
                             'risk_reward_ratio': signal.risk_reward_ratio,
                             'risk_percentage': signal.risk_percentage,
-                            'signal_grade': 'institutional' if signal.strength == SignalStrength.INSTITUTIONAL else 'standard',
-                            'volume_confirmation': signal.analysis_summary['volume_confirmation'],
-                            'smart_money_signals': signal.analysis_summary['smart_money_signals'],
-                            'market_structure': signal.analysis_summary['market_structure']
+                            'signal_grade': 'institutional' if signal.strength == SignalStrength.INSTITUTIONAL else 'ml_based',
+                            'feature_importance_top5': dict(list(signal.feature_importance.items())[:5])
                         },
                         'indicators': {
-                            'rsi': round(df['rsi'].iloc[-1], 2) if 'rsi' in df.columns else 50,
-                            'volume_ratio': signal.analysis_summary['volume_confirmation'],
-                            'atr_percentage': round(df['atr_pct'].iloc[-1], 2) if 'atr_pct' in df.columns else 1
+                            'ml_prediction_pct': round(signal.ml_prediction * 100, 2),
+                            'model_confidence': signal.model_confidence,
+                            'volatility': signal.analysis_summary['volatility']
                         }
                     }
                     
                     signals.append(signal_dict)
-                    logger.info(f"Production signal: {symbol} {signal.direction} "
-                              f"(Strength: {signal.strength.value}, Confluence: {signal.analysis_summary['confluence_score']:.3f})")
+                    logger.info(f"ML Signal: {symbol} {signal.direction} "
+                              f"(Pred: {signal.ml_prediction:.4f}, Conf: {signal.model_confidence:.3f})")
                 
                 # Rate limiting
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.8)  # Slightly slower for ML processing
                 
             except Exception as e:
                 logger.error(f"Error scanning {symbol}: {e}")
                 continue
         
-        logger.info(f"Production scan complete: {len(signals)} high-quality signals from {processed_count} coins")
+        logger.info(f"ML scan complete: {len(signals)} signals from {processed_count} coins")
         return signals
     
     async def get_current_price(self, symbol: str) -> float:
-        """Get current price with enhanced reliability"""
+        """Get current price"""
         try:
-            # Try ticker first
             ticker = self.exchange.fetch_ticker(f"{symbol}/USDT")
-            price = ticker.get('last')
-            
-            if price and price > 0:
-                return float(price)
-            
-            # Fallback to mark price
-            price = ticker.get('mark')
-            if price and price > 0:
-                return float(price)
-            
-            # Final fallback to close price
-            price = ticker.get('close')
-            if price and price > 0:
-                return float(price)
-            
-            logger.warning(f"Could not get valid price for {symbol}")
-            return 0.0
-            
+            return float(ticker.get('last', 0))
         except Exception as e:
-            logger.error(f"Error fetching current price for {symbol}: {e}")
+            logger.error(f"Error fetching price for {symbol}: {e}")
             return 0.0
     
+    def save_models(self, filepath: str = 'ml_models.joblib'):
+        """Save trained models"""
+        try:
+            model_data = {
+                'models': self.models,
+                'scalers': self.scalers,
+                'feature_selectors': self.feature_selectors,
+                'feature_importance_history': self.feature_importance_history
+            }
+            joblib.dump(model_data, filepath)
+            logger.info(f"Models saved to {filepath}")
+        except Exception as e:
+            logger.error(f"Error saving models: {e}")
+    
+    def load_models(self, filepath: str = 'ml_models.joblib'):
+        """Load trained models"""
+        try:
+            if os.path.exists(filepath):
+                model_data = joblib.load(filepath)
+                self.models = model_data.get('models', {})
+                self.scalers = model_data.get('scalers', {})
+                self.feature_selectors = model_data.get('feature_selectors', {})
+                self.feature_importance_history = model_data.get('feature_importance_history', {})
+                logger.info(f"Models loaded from {filepath}")
+        except Exception as e:
+            logger.error(f"Error loading models: {e}")
+    
     def __del__(self):
-        """Cleanup resources"""
+        """Cleanup"""
         try:
             if hasattr(self, 'executor'):
                 self.executor.shutdown(wait=False)

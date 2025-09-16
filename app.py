@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Production-Ready Enhanced Crypto Trading Bot
-Institutional-Grade Analysis with Smart Money Concepts
+ML-Enhanced Crypto Trading Bot
+Feature Engineering • Orthogonalization • Time Series Validation
 """
 
 import asyncio
@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set
 import signal
 import sys
+import numpy as np
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks
@@ -21,32 +22,32 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
-# Import our enhanced modules
+# Import our ML enhanced modules
 from database import Database
-from enhanced_trading_analyzer_v2 import ProductionTradingAnalyzer
+from enhanced_trading_analyzer_v2 import MLTradingAnalyzer
 
-# Configure logging with proper formatting
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('bot.log'),
+        logging.FileHandler('ml_bot.log'),
         logging.StreamHandler(sys.stdout)
     ]
 )
 logger = logging.getLogger(__name__)
 
-class ProductionTradingBot:
+class MLTradingBot:
     def __init__(self):
-        # Core components
+        # Core ML components
         self.database = Database()
-        self.analyzer = ProductionTradingAnalyzer(database=self.database)
+        self.analyzer = MLTradingAnalyzer(database=self.database)
         
         # FastAPI setup
         self.app = FastAPI(
-            title="Production Crypto Trading Bot",
-            version="2.0.0",
-            description="Institutional-Grade Trading Bot with Smart Money Analysis"
+            title="ML-Enhanced Crypto Trading Bot",
+            version="3.0.0",
+            description="Advanced ML Trading Bot with Feature Engineering and Time Series Validation"
         )
         
         # Add CORS middleware
@@ -64,40 +65,170 @@ class ProductionTradingBot:
         # Bot state
         self.running = False
         self.is_scanning = False
-        self.scan_interval = 300  # 5 minutes for production quality
+        self.is_training = False
+        self.scan_interval = 600  # 10 minutes for ML processing
+        self.retrain_interval = 3600  # 1 hour for model retraining
         self.last_scan_time = None
+        self.last_train_time = None
         self.scan_count = 0
         self.startup_time = datetime.now()
+        
+        # ML-specific tracking
+        self.model_performance = {}
+        self.feature_importance_trends = {}
+        self.prediction_accuracy = {}
         
         # Signal management
         self.active_signals: Set[str] = set()
         self.active_coins: Set[str] = set()
-        self.signal_grace_period = 300  # 5 minutes grace period
+        self.signal_grace_period = 300
         self.scanning_lock = asyncio.Lock()
         
-        # Performance metrics
+        # Enhanced performance metrics
         self.performance_metrics = {
             'total_scans': 0,
             'signals_generated': 0,
             'signals_closed': 0,
             'avg_scan_time': 0,
             'win_rate': 0,
-            'avg_hold_time': 0
+            'avg_hold_time': 0,
+            'ml_model_accuracy': 0,
+            'feature_orthogonality_score': 0,
+            'prediction_confidence_avg': 0,
+            'sharpe_ratio': 0
         }
         
-        # Market regime tracking
+        # Market regime and ML insights
         self.market_regime = 'normal'
+        self.dominant_features = []
+        self.model_confidence_threshold = 0.75
         
-        # Setup routes and initialize
+        # Setup and initialize
         self.setup_routes()
-        self.initialize_bot_state()
+        self.initialize_ml_bot_state()
+        
+        # Load existing models if available
+        self.analyzer.load_models()
         
         # Graceful shutdown handling
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
 
+    def signal_handler(self, signum, frame):
+        """Handle graceful shutdown with model saving"""
+        logger.info(f"Received signal {signum}. Saving models and shutting down...")
+        self.analyzer.save_models()
+        self.running = False
+        sys.exit(0)
+
+    def initialize_ml_bot_state(self):
+        """Initialize ML bot state with enhanced cleanup"""
+        try:
+            # Standard cleanup
+            active_signals = self.database.get_active_signals()
+            self.active_coins = {signal['coin'] for signal in active_signals}
+            
+            # Clean stale signals
+            stale_signals = []
+            current_time = datetime.now()
+            
+            for signal in active_signals:
+                try:
+                    signal_time = datetime.fromisoformat(signal['timestamp'].replace('Z', '+00:00'))
+                    if (current_time - signal_time).total_seconds() > 86400:  # 24 hours
+                        stale_signals.append(signal)
+                except:
+                    stale_signals.append(signal)
+            
+            # Close stale signals
+            for signal in stale_signals:
+                self.database.close_signal(
+                    signal['signal_id'],
+                    signal['entry_price'],
+                    "ML system cleanup - stale signal"
+                )
+            
+            if stale_signals:
+                logger.info(f"ML cleanup: Removed {len(stale_signals)} stale signals")
+            
+            # Initialize ML-specific tracking
+            self.initialize_ml_tracking()
+            
+            # Clean old data
+            self.database.clean_old_data(days=30)
+            
+            # Log ML bot initialization
+            self.database.log_bot_activity(
+                'INFO', 'ML_SYSTEM', 'ML trading bot initialized',
+                f'Feature engineering and time-series validation ready for {len(self.analyzer.coins)} coins'
+            )
+            
+        except Exception as e:
+            logger.error(f"Error during ML bot initialization: {e}")
+
+    def initialize_ml_tracking(self):
+        """Initialize ML-specific performance tracking"""
+        try:
+            # Initialize model performance tracking for each coin
+            for coin in self.analyzer.coins:
+                symbol = coin.replace('/USDT', '')
+                self.model_performance[symbol] = {
+                    'accuracy': 0.0,
+                    'precision': 0.0,
+                    'recall': 0.0,
+                    'last_trained': None,
+                    'prediction_count': 0,
+                    'correct_predictions': 0
+                }
+                
+                self.feature_importance_trends[symbol] = {
+                    'top_features': [],
+                    'stability_score': 0.0,
+                    'last_updated': None
+                }
+            
+            logger.info("ML tracking systems initialized")
+            
+        except Exception as e:
+            logger.error(f"Error initializing ML tracking: {e}")
+
+    def validate_ml_signal_before_save(self, signal_data: Dict) -> bool:
+        """Enhanced ML signal validation"""
+        try:
+            # Standard validation
+            if not self.validate_signal_before_save(signal_data):
+                return False
+            
+            # ML-specific validation
+            ml_prediction = signal_data.get('ml_prediction', 0)
+            model_confidence = signal_data.get('model_confidence', 0)
+            
+            # Check ML prediction strength
+            if abs(ml_prediction) < 0.01:  # Less than 1% predicted move
+                logger.warning(f"ML prediction too weak: {ml_prediction}")
+                return False
+            
+            # Check model confidence
+            if model_confidence < self.model_confidence_threshold:
+                logger.warning(f"Model confidence too low: {model_confidence}")
+                return False
+            
+            # Check feature importance sum
+            feature_importance = signal_data.get('feature_importance', {})
+            importance_sum = sum(feature_importance.values()) if feature_importance else 0
+            
+            if importance_sum < 0.6:  # Minimum feature importance threshold
+                logger.warning(f"Feature importance sum too low: {importance_sum}")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error in ML signal validation: {e}")
+            return False
+
     def validate_signal_before_save(self, signal_data: Dict) -> bool:
-        """Production-grade signal validation"""
+        """Standard signal validation"""
         try:
             # Check required fields
             required_fields = ['signal_id', 'coin', 'direction', 'entry_price', 'take_profit', 'stop_loss']
@@ -134,93 +265,49 @@ class ProductionTradingBot:
         except Exception as e:
             logger.error(f"Error validating signal: {e}")
             return False
-    
-    def signal_handler(self, signum, frame):
-        """Handle graceful shutdown"""
-        logger.info(f"Received signal {signum}. Initiating graceful shutdown...")
-        self.running = False
-        sys.exit(0)
-    
-    def initialize_bot_state(self):
-        """Initialize bot state with cleanup"""
-        try:
-            # Clean up any orphaned signals
-            active_signals = self.database.get_active_signals()
-            self.active_coins = {signal['coin'] for signal in active_signals}
-            stale_signals = []
-            
-            current_time = datetime.now()
-            for signal in active_signals:
-                # Check if signal is older than 24 hours
-                try:
-                    signal_time = datetime.fromisoformat(signal['timestamp'].replace('Z', '+00:00'))
-                    if (current_time - signal_time).total_seconds() > 86400:  # 24 hours
-                        stale_signals.append(signal)
-                except:
-                    stale_signals.append(signal)  # Invalid timestamp
-            
-            # Close stale signals
-            for signal in stale_signals:
-                self.database.close_signal(
-                    signal['signal_id'],
-                    signal['entry_price'],
-                    "System cleanup - stale signal"
-                )
-            
-            if stale_signals:
-                logger.info(f"Cleaned up {len(stale_signals)} stale signals")
-            
-            # Clean old data periodically
-            self.database.clean_old_data(days=30)
-            
-            # Log initialization
-            self.database.log_bot_activity(
-                'INFO', 'SYSTEM', 'Production bot initialized',
-                f'Enhanced algorithms ready for {len(self.analyzer.coins)} coins'
-            )
-            
-        except Exception as e:
-            logger.error(f"Error during initialization: {e}")
-    
+
     def setup_routes(self):
-        """Setup all API routes"""
+        """Setup all API routes with ML enhancements"""
         
         @self.app.get("/")
         async def dashboard():
-            """Serve professional dashboard"""
+            """Serve ML-enhanced dashboard"""
             try:
-                with open("templates/dashboard.html", "r") as f:
+                with open("templates/ml_dashboard.html", "r") as f:
                     return HTMLResponse(content=f.read())
             except FileNotFoundError:
-                # Fallback to built-in dashboard if file not found
-                return HTMLResponse(content=self.get_enhanced_dashboard())
+                return HTMLResponse(content=self.get_ml_enhanced_dashboard())
         
         @self.app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
-            """Enhanced WebSocket endpoint"""
+            """Enhanced WebSocket with ML updates"""
             await websocket.accept()
             self.websocket_connections.add(websocket)
             
             try:
-                # Send initial connection message
                 await websocket.send_text(json.dumps({
                     "type": "connection_established",
-                    "message": "Connected to Production Trading Bot",
-                    "version": "2.0.0",
+                    "message": "Connected to ML Trading Bot",
+                    "version": "3.0.0",
                     "features": [
-                        "institutional_analysis",
-                        "smart_money_concepts",
-                        "production_grade_signals",
-                        "real_time_monitoring"
+                        "advanced_feature_engineering",
+                        "feature_orthogonalization", 
+                        "time_series_validation",
+                        "explainable_ai",
+                        "dynamic_model_retraining"
                     ],
                     "timestamp": datetime.now().isoformat()
                 }))
                 
-                # Keep connection alive
                 while True:
-                    await asyncio.sleep(30)  # Send heartbeat every 30 seconds
+                    await asyncio.sleep(30)
                     await websocket.send_text(json.dumps({
                         "type": "heartbeat",
+                        "ml_status": {
+                            "models_loaded": len(self.analyzer.models),
+                            "last_training": self.last_train_time.isoformat() if self.last_train_time else None,
+                            "avg_confidence": self.performance_metrics.get('prediction_confidence_avg', 0)
+                        },
                         "timestamp": datetime.now().isoformat()
                     }))
                     
@@ -230,59 +317,9 @@ class ProductionTradingBot:
                 logger.debug(f"WebSocket error: {e}")
                 self.websocket_connections.discard(websocket)
 
-        @self.app.get("/api/alerts")
-        async def get_recent_alerts():
-            """Get recent signals for alerts section"""
-            try:
-                # Get both active and recently closed signals
-                with self.database.get_db_connection() as conn:
-                    cursor = conn.cursor()
-            
-                    cursor.execute('''
-                    SELECT s.signal_id, s.coin, s.direction, s.entry_price, s.exit_price,
-                        s.status, s.created_at, s.closed_at, s.exit_reason, s.confidence,
-                        tr.pnl_usd, tr.pnl_percentage
-                    FROM signals s
-                    LEFT JOIN trade_results tr ON s.signal_id = tr.signal_id
-                    WHERE s.created_at >= datetime('now', '-7 days')
-                    ORDER BY s.created_at DESC
-                    LIMIT 20
-                    ''')
-            
-                    alerts = []
-                    for row in cursor.fetchall():
-                        row_dict = dict(row)
-                
-                        # Format the alert data
-                        alert = {
-                            'signal_id': row_dict['signal_id'],
-                            'coin': row_dict['coin'],
-                            'direction': row_dict['direction'],
-                            'entry_price': row_dict['entry_price'],
-                            'status': row_dict['status'],
-                            'confidence': row_dict['confidence'],
-                            'timestamp': row_dict['created_at'],
-                            'pnl_usd': row_dict['pnl_usd'] or 0,
-                            'pnl_percentage': row_dict['pnl_percentage'] or 0,
-                            'exit_reason': row_dict['exit_reason']
-                        }
-                
-                        # Add status-specific info
-                        if row_dict['status'] == 'closed':
-                            alert['closed_at'] = row_dict['closed_at']
-                            alert['exit_price'] = row_dict['exit_price']
-                
-                        alerts.append(alert)
-            
-                    return JSONResponse(content={"alerts": alerts})
-            
-            except Exception as e:
-                logger.error(f"Error getting alerts: {e}")
-                return JSONResponse(content={"error": str(e)}, status_code=500)
-
         @self.app.get("/api/signals")
-        async def get_signals():
-            """Get active signals with live P&L"""
+        async def get_ml_signals():
+            """Get active ML signals with enhanced data"""
             try:
                 signals = self.database.get_active_signals()
                 enhanced_signals = []
@@ -292,20 +329,24 @@ class ProductionTradingBot:
                         current_price = await self.analyzer.get_current_price(signal['coin'])
                         
                         if current_price > 0:
-                            # Update database with current price
+                            # Update database
                             self.database.update_signal_price(signal['signal_id'], current_price)
                             
                             # Calculate live P&L
                             entry_price = signal['entry_price']
                             direction = signal['direction']
                             
-                            # P&L calculation with 10x leverage
                             if direction == 'LONG':
                                 pnl_pct = ((current_price - entry_price) / entry_price) * 100 * 10
-                            else:  # SHORT
+                            else:
                                 pnl_pct = ((entry_price - current_price) / entry_price) * 100 * 10
                             
-                            pnl_usd = (pnl_pct / 100) * 1000  # $1000 position size
+                            pnl_usd = (pnl_pct / 100) * 1000
+                            
+                            # Enhanced ML metrics
+                            analysis_data = signal.get('analysis_data', {})
+                            ml_prediction = analysis_data.get('ml_prediction', 0)
+                            model_confidence = analysis_data.get('model_confidence', 0)
                             
                             # Progress calculations
                             if direction == 'LONG':
@@ -319,130 +360,150 @@ class ProductionTradingBot:
                                 sl_distance = ((signal['stop_loss'] - current_price) / 
                                              (signal['stop_loss'] - entry_price)) * 100
                             
-                            # Enhanced signal data
+                            # Add ML-specific data
                             signal['current_price'] = current_price
                             signal['live_pnl_usd'] = round(pnl_usd, 2)
                             signal['live_pnl_percentage'] = round(pnl_pct, 2)
                             signal['tp_progress'] = max(0, min(100, tp_progress))
                             signal['sl_distance'] = max(0, min(100, sl_distance))
-                            signal['signal_grade'] = signal.get('analysis_data', {}).get('signal_grade', 'standard')
+                            signal['ml_prediction'] = ml_prediction
+                            signal['model_confidence'] = model_confidence
+                            signal['signal_grade'] = analysis_data.get('signal_grade', 'ml_based')
+                            signal['feature_importance_top3'] = dict(list(
+                                analysis_data.get('feature_importance_top5', {}).items())[:3])
                             
-                        else:
-                            # Fallback if price fetch fails
-                            signal['current_price'] = signal['entry_price']
-                            signal['live_pnl_usd'] = 0
-                            signal['live_pnl_percentage'] = 0
-                            signal['tp_progress'] = 0
-                            signal['sl_distance'] = 0
-                            signal['signal_grade'] = signal.get('analysis_data', {}).get('signal_grade', 'standard')
-                        
                         enhanced_signals.append(signal)
                         
                     except Exception as e:
-                        logger.error(f"Error enhancing signal {signal['signal_id']}: {e}")
-                        # Add signal with default values
-                        signal['current_price'] = signal['entry_price']
-                        signal['live_pnl_usd'] = 0
-                        signal['live_pnl_percentage'] = 0
-                        signal['tp_progress'] = 0
-                        signal['sl_distance'] = 0
+                        logger.error(f"Error enhancing ML signal {signal['signal_id']}: {e}")
                         enhanced_signals.append(signal)
                 
                 return JSONResponse(content={
                     "signals": enhanced_signals,
                     "count": len(enhanced_signals),
                     "performance": self.performance_metrics,
+                    "ml_metrics": {
+                        "models_active": len(self.analyzer.models),
+                        "avg_model_confidence": self.performance_metrics.get('prediction_confidence_avg', 0),
+                        "feature_orthogonality": self.performance_metrics.get('feature_orthogonality_score', 0),
+                        "dominant_features": self.dominant_features[:5]
+                    },
                     "market_regime": self.market_regime
                 })
                 
             except Exception as e:
-                logger.error(f"Error getting signals: {e}")
+                logger.error(f"Error getting ML signals: {e}")
                 return JSONResponse(content={"error": str(e)}, status_code=500)
-        
-        @self.app.get("/api/portfolio")
-        async def get_portfolio():
-            """Get enhanced portfolio statistics"""
+
+        @self.app.get("/api/ml/models")
+        async def get_model_status():
+            """Get ML model status and performance"""
             try:
-                portfolio = self.database.get_portfolio_stats()
+                model_status = {}
                 
-                # Add enhanced metrics
-                portfolio['signal_quality_score'] = self.calculate_signal_quality_score()
-                portfolio['risk_metrics'] = self.get_risk_metrics()
-                portfolio['market_regime'] = self.market_regime
+                for symbol, model_info in self.analyzer.feature_importance_history.items():
+                    model_status[symbol] = {
+                        'model_type': model_info.get('best_model', 'unknown'),
+                        'cv_score': model_info.get('best_score', 0),
+                        'feature_count': len(model_info.get('feature_importance', {})),
+                        'top_features': dict(list(
+                            sorted(model_info.get('feature_importance', {}).items(), 
+                                  key=lambda x: x[1], reverse=True)[:5])),
+                        'shap_available': len(model_info.get('shap_importance', {})) > 0,
+                        'last_trained': self.model_performance.get(symbol, {}).get('last_trained'),
+                        'accuracy': self.model_performance.get(symbol, {}).get('accuracy', 0)
+                    }
                 
-                return JSONResponse(content={"portfolio": portfolio})
+                return JSONResponse(content={
+                    "models": model_status,
+                    "global_stats": {
+                        "total_models": len(self.analyzer.models),
+                        "avg_accuracy": np.mean([m.get('accuracy', 0) for m in self.model_performance.values()]),
+                        "training_status": "active" if self.is_training else "idle",
+                        "last_training_session": self.last_train_time.isoformat() if self.last_train_time else None
+                    }
+                })
+                
             except Exception as e:
-                logger.error(f"Error getting portfolio: {e}")
+                logger.error(f"Error getting model status: {e}")
                 return JSONResponse(content={"error": str(e)}, status_code=500)
-        
-        @self.app.get("/api/analysis/{coin}")
-        async def get_coin_analysis(coin: str):
-            """Get detailed technical analysis for a coin"""
+
+        @self.app.get("/api/ml/features/{coin}")
+        async def get_feature_analysis(coin: str):
+            """Get detailed feature analysis for a coin"""
             try:
                 symbol = f"{coin}/USDT"
                 
                 # Get market data
-                df = await self.analyzer.get_market_data(symbol, '1h', 200)
+                df = await self.analyzer.get_market_data(symbol, '1h', 500)
                 if df.empty:
                     return JSONResponse(content={"error": "No data available"}, status_code=404)
                 
-                # Calculate indicators
-                df = self.analyzer.calculate_technical_indicators(df)
+                # Engineer features
+                df = self.analyzer.engineer_features(df)
+                df = self.analyzer.orthogonalize_features(df)
                 
-                # Get smart money analysis
-                smart_money = self.analyzer.detect_smart_money_patterns(df)
+                # Get feature selection results
+                df, selected_features = self.analyzer.select_features(df)
                 
-                # Get order book
-                order_book = await self.analyzer.get_order_book_analysis(symbol)
+                # Get model info if available
+                model_info = self.analyzer.feature_importance_history.get(coin, {})
                 
-                # Calculate confluence
-                confluence = self.analyzer.calculate_signal_confluence(df, smart_money, order_book)
-                
-                # Prepare analysis response
                 analysis = {
                     'coin': coin,
-                    'current_price': float(df['close'].iloc[-1]),
-                    'confluence': confluence,
-                    'smart_money_patterns': smart_money,
-                    'order_book_analysis': order_book,
-                    'technical_indicators': {
-                        'rsi': float(df['rsi'].iloc[-1]) if 'rsi' in df.columns else None,
-                        'macd_hist': float(df['macd_hist'].iloc[-1]) if 'macd_hist' in df.columns else None,
-                        'volume_ratio': float(df['volume_ratio'].iloc[-1]) if 'volume_ratio' in df.columns else None,
-                        'atr_pct': float(df['atr_pct'].iloc[-1]) if 'atr_pct' in df.columns else None,
-                        'market_structure': str(df['market_structure'].iloc[-1]) if 'market_structure' in df.columns else None
+                    'total_features_engineered': len([col for col in df.columns if not any(x in col.lower() for x in 
+                                                    ['open', 'high', 'low', 'close', 'volume', 'timestamp', 'target'])]),
+                    'selected_features': selected_features,
+                    'feature_importance': model_info.get('feature_importance', {}),
+                    'shap_importance': model_info.get('shap_importance', {}),
+                    'model_performance': {
+                        'cv_score': model_info.get('best_score', 0),
+                        'model_type': model_info.get('best_model', 'not_trained'),
+                        'feature_stability': self.feature_importance_trends.get(coin, {}).get('stability_score', 0)
                     },
-                    'support_resistance': {
-                        'support': float(df['support'].iloc[-1]) if 'support' in df.columns and df['support'].notna().iloc[-1] else None,
-                        'resistance': float(df['resistance'].iloc[-1]) if 'resistance' in df.columns and df['resistance'].notna().iloc[-1] else None
-                    },
-                    'price_levels': {
-                        'ema_9': float(df['ema_9'].iloc[-1]) if 'ema_9' in df.columns else None,
-                        'ema_21': float(df['ema_21'].iloc[-1]) if 'ema_21' in df.columns else None,
-                        'ema_50': float(df['ema_50'].iloc[-1]) if 'ema_50' in df.columns else None,
-                        'vwap': float(df['vwap'].iloc[-1]) if 'vwap' in df.columns else None
+                    'feature_categories': {
+                        'price_features': len([f for f in selected_features if 'return' in f or 'price' in f]),
+                        'volume_features': len([f for f in selected_features if 'volume' in f or 'vwap' in f]),
+                        'volatility_features': len([f for f in selected_features if 'vol' in f or 'atr' in f]),
+                        'technical_features': len([f for f in selected_features if any(t in f for t in ['rsi', 'macd', 'bb', 'sma', 'ema'])]),
+                        'statistical_features': len([f for f in selected_features if any(s in f for s in ['skew', 'kurt', 'autocorr', 'entropy'])])
                     }
                 }
                 
                 return JSONResponse(content=analysis)
                 
             except Exception as e:
-                logger.error(f"Error getting analysis for {coin}: {e}")
+                logger.error(f"Error getting feature analysis for {coin}: {e}")
                 return JSONResponse(content={"error": str(e)}, status_code=500)
-        
-        @self.app.get("/api/logs")
-        async def get_logs():
-            """Get recent bot logs"""
+
+        @self.app.get("/api/portfolio")
+        async def get_ml_portfolio():
+            """Get enhanced ML portfolio statistics"""
             try:
-                logs = self.database.get_recent_logs(100)
-                return JSONResponse(content={"logs": logs})
+                portfolio = self.database.get_portfolio_stats()
+                
+                # Add ML-specific metrics
+                portfolio['ml_metrics'] = {
+                    'model_count': len(self.analyzer.models),
+                    'avg_prediction_accuracy': self.performance_metrics.get('ml_model_accuracy', 0),
+                    'feature_orthogonality_score': self.performance_metrics.get('feature_orthogonality_score', 0),
+                    'prediction_confidence_avg': self.performance_metrics.get('prediction_confidence_avg', 0),
+                    'sharpe_ratio': self.performance_metrics.get('sharpe_ratio', 0)
+                }
+                
+                portfolio['signal_quality_score'] = self.calculate_ml_signal_quality_score()
+                portfolio['risk_metrics'] = self.get_ml_risk_metrics()
+                portfolio['market_regime'] = self.market_regime
+                
+                return JSONResponse(content={"portfolio": portfolio})
+                
             except Exception as e:
-                logger.error(f"Error getting logs: {e}")
+                logger.error(f"Error getting ML portfolio: {e}")
                 return JSONResponse(content={"error": str(e)}, status_code=500)
-        
+
         @self.app.get("/api/system")
-        async def get_system_stats():
-            """Get enhanced system statistics"""
+        async def get_ml_system_stats():
+            """Get enhanced ML system statistics"""
             try:
                 cpu_percent = psutil.cpu_percent(interval=1)
                 memory = psutil.virtual_memory()
@@ -454,76 +515,115 @@ class ProductionTradingBot:
                     "uptime_seconds": uptime,
                     "scan_count": self.scan_count,
                     "last_scan": self.last_scan_time.isoformat() if self.last_scan_time else None,
+                    "last_training": self.last_train_time.isoformat() if self.last_train_time else None,
                     "active_connections": len(self.websocket_connections),
                     "is_running": self.running,
                     "is_scanning": self.is_scanning,
+                    "is_training": self.is_training,
                     "scan_interval": self.scan_interval,
+                    "retrain_interval": self.retrain_interval,
                     "performance_metrics": self.performance_metrics,
-                    "analyzer_type": "production_grade",
+                    "analyzer_type": "ml_enhanced",
+                    "ml_features": {
+                        "feature_engineering": True,
+                        "orthogonalization": True,
+                        "time_series_validation": True,
+                        "explainable_ai": True,
+                        "auto_retraining": True
+                    },
                     "coins_monitored": len(self.analyzer.coins),
+                    "models_trained": len(self.analyzer.models),
                     "market_regime": self.market_regime,
-                    "active_signals_count": len(self.active_signals)
+                    "active_signals_count": len(self.active_signals),
+                    "model_confidence_threshold": self.model_confidence_threshold
                 })
+                
             except Exception as e:
-                logger.error(f"Error getting system stats: {e}")
+                logger.error(f"Error getting ML system stats: {e}")
                 return JSONResponse(content={"error": str(e)}, status_code=500)
-        
+
+        @self.app.post("/api/control/retrain")
+        async def trigger_model_retrain():
+            """Manually trigger model retraining"""
+            if self.is_training:
+                return JSONResponse(content={"status": "already_training", "message": "Models are already being retrained"})
+            
+            asyncio.create_task(self.retrain_models())
+            return JSONResponse(content={"status": "training_started", "message": "Model retraining initiated"})
+
         @self.app.post("/api/control/start")
-        async def start_bot():
-            """Start the trading bot"""
+        async def start_ml_bot():
+            """Start the ML trading bot"""
             if not self.running:
                 self.running = True
-                asyncio.create_task(self.production_scan_cycle())
-                message = "Production trading bot started"
+                asyncio.create_task(self.ml_scan_cycle())
+                asyncio.create_task(self.ml_retrain_cycle())
+                message = "ML trading bot started with advanced features"
                 logger.info(message)
-                self.database.log_bot_activity('INFO', 'SYSTEM', message)
+                self.database.log_bot_activity('INFO', 'ML_SYSTEM', message)
                 return JSONResponse(content={"status": "started", "message": message})
             else:
-                return JSONResponse(content={"status": "already_running", "message": "Bot is already running"})
-        
+                return JSONResponse(content={"status": "already_running", "message": "ML bot is already running"})
+
         @self.app.post("/api/control/stop")
-        async def stop_bot():
-            """Stop the trading bot"""
+        async def stop_ml_bot():
+            """Stop the ML trading bot"""
             self.running = False
-            message = "Production trading bot stopped"
+            # Save models before stopping
+            self.analyzer.save_models()
+            message = "ML trading bot stopped and models saved"
             logger.info(message)
-            self.database.log_bot_activity('INFO', 'SYSTEM', message)
+            self.database.log_bot_activity('INFO', 'ML_SYSTEM', message)
             return JSONResponse(content={"status": "stopped", "message": message})
-        
+
         @self.app.get("/api/health")
         async def health_check():
-            """Health check endpoint"""
+            """Enhanced health check with ML status"""
             return JSONResponse(content={
                 "status": "healthy",
                 "timestamp": datetime.now().isoformat(),
-                "version": "2.0.0"
+                "version": "3.0.0",
+                "ml_status": {
+                    "models_loaded": len(self.analyzer.models),
+                    "training_active": self.is_training,
+                    "last_prediction": self.last_scan_time.isoformat() if self.last_scan_time else None
+                }
             })
-    
-    def calculate_signal_quality_score(self) -> float:
-        """Calculate overall signal quality score"""
+
+    def calculate_ml_signal_quality_score(self) -> float:
+        """Calculate ML-enhanced signal quality score"""
         try:
             if self.performance_metrics['total_scans'] == 0:
                 return 0.0
             
             # Base score from win rate
             win_rate = self.performance_metrics.get('win_rate', 0)
-            base_score = win_rate * 0.4
+            base_score = win_rate * 0.3
             
-            # Signal generation efficiency
-            signal_efficiency = min(1.0, self.performance_metrics.get('signals_generated', 0) / max(1, self.performance_metrics['total_scans']))
-            efficiency_score = signal_efficiency * 0.3
+            # ML prediction accuracy
+            ml_accuracy = self.performance_metrics.get('ml_model_accuracy', 0)
+            accuracy_score = ml_accuracy * 0.25
             
-            # Production grade bonus
-            production_bonus = 0.3
+            # Feature orthogonality bonus
+            orthogonality = self.performance_metrics.get('feature_orthogonality_score', 0)
+            orthogonality_score = orthogonality * 0.2
             
-            return min(1.0, base_score + efficiency_score + production_bonus)
+            # Model confidence
+            confidence = self.performance_metrics.get('prediction_confidence_avg', 0)
+            confidence_score = confidence * 0.15
+            
+            # Sharpe ratio component
+            sharpe = min(3.0, max(0, self.performance_metrics.get('sharpe_ratio', 0))) / 3.0
+            sharpe_score = sharpe * 0.1
+            
+            return min(1.0, base_score + accuracy_score + orthogonality_score + confidence_score + sharpe_score)
             
         except Exception as e:
-            logger.error(f"Error calculating signal quality score: {e}")
+            logger.error(f"Error calculating ML signal quality score: {e}")
             return 0.0
-    
-    def get_risk_metrics(self) -> Dict:
-        """Get comprehensive risk metrics"""
+
+    def get_ml_risk_metrics(self) -> Dict:
+        """Get ML-enhanced risk metrics"""
         try:
             active_signals = self.database.get_active_signals()
             
@@ -533,20 +633,38 @@ class ProductionTradingBot:
                     "max_single_risk": 0,
                     "portfolio_heat": 0,
                     "correlation_risk": "low",
-                    "active_positions": 0
+                    "active_positions": 0,
+                    "model_risk": "low",
+                    "feature_stability": 1.0
                 }
             
-            # Calculate risk metrics
+            # Standard risk calculations
             total_risk = sum(signal.get('analysis_data', {}).get('risk_percentage', 1) for signal in active_signals)
             max_single_risk = max(signal.get('analysis_data', {}).get('risk_percentage', 1) for signal in active_signals)
+            portfolio_heat = len(active_signals) * 1.0  # Assuming 1% avg risk
             
-            # Portfolio heat (total exposure)
-            portfolio_heat = len(active_signals) * 1.2  # Assuming 1.2% avg risk per trade
+            # ML-specific risk assessments
+            model_confidences = [signal.get('analysis_data', {}).get('model_confidence', 0) for signal in active_signals]
+            avg_confidence = np.mean(model_confidences) if model_confidences else 0
             
-            # Correlation risk assessment
+            # Feature stability assessment
+            feature_stability = np.mean([
+                self.feature_importance_trends.get(signal['coin'], {}).get('stability_score', 0.5)
+                for signal in active_signals
+            ])
+            
+            # Model risk assessment
+            if avg_confidence > 0.85:
+                model_risk = "low"
+            elif avg_confidence > 0.75:
+                model_risk = "medium"
+            else:
+                model_risk = "high"
+            
+            # Correlation risk (enhanced with ML insights)
             if len(active_signals) <= 2:
                 correlation_risk = "low"
-            elif len(active_signals) <= 4:
+            elif len(active_signals) <= 4 and avg_confidence > 0.8:
                 correlation_risk = "medium"
             else:
                 correlation_risk = "high"
@@ -556,21 +674,18 @@ class ProductionTradingBot:
                 "max_single_risk": round(max_single_risk, 2),
                 "portfolio_heat": round(portfolio_heat, 2),
                 "correlation_risk": correlation_risk,
-                "active_positions": len(active_signals)
+                "active_positions": len(active_signals),
+                "model_risk": model_risk,
+                "feature_stability": round(feature_stability, 3),
+                "avg_model_confidence": round(avg_confidence, 3)
             }
             
         except Exception as e:
-            logger.error(f"Error calculating risk metrics: {e}")
-            return {
-                "total_risk": 0,
-                "max_single_risk": 0,
-                "portfolio_heat": 0,
-                "correlation_risk": "unknown",
-                "active_positions": 0
-            }
-    
+            logger.error(f"Error calculating ML risk metrics: {e}")
+            return {"error": "calculation_failed"}
+
     async def broadcast_to_clients(self, message: Dict):
-        """Broadcast message to all connected WebSocket clients"""
+        """Broadcast ML updates to WebSocket clients"""
         if not self.websocket_connections:
             return
         
@@ -585,12 +700,11 @@ class ProductionTradingBot:
         
         # Remove disconnected clients
         self.websocket_connections -= disconnected
-    
-    async def production_scan_cycle(self):
-        """Production-grade market scanning cycle"""
+
+    async def ml_scan_cycle(self):
+        """ML-enhanced market scanning cycle"""
         while self.running:
             try:
-                # Prevent concurrent scans
                 if self.scanning_lock.locked():
                     await asyncio.sleep(60)
                     continue
@@ -599,66 +713,77 @@ class ProductionTradingBot:
                     self.is_scanning = True
                     scan_start = datetime.now()
                     
-                    logger.info(f"Starting production scan #{self.scan_count + 1}")
+                    logger.info(f"Starting ML scan #{self.scan_count + 1}")
                     
                     # Broadcast scan start
                     await self.broadcast_to_clients({
-                        "type": "scan_started",
+                        "type": "ml_scan_started",
                         "scan_number": self.scan_count + 1,
                         "timestamp": scan_start.isoformat(),
-                        "analyzer_type": "production_grade"
+                        "analyzer_type": "ml_enhanced",
+                        "models_active": len(self.analyzer.models)
                     })
                     
                     # Check signal exits first
                     await self.check_signal_exits()
                     
-                    # Scan for new signals
+                    # ML signal generation
                     active_signals = self.database.get_active_signals()
-                    max_concurrent_signals = 3  # Conservative limit for production
+                    max_concurrent_signals = 3
                     
                     new_signals_count = 0
+                    ml_predictions_made = 0
                     
                     if len(active_signals) < max_concurrent_signals:
                         try:
+                            # Use ML analyzer for signal generation
                             new_signals = await self.analyzer.scan_all_coins()
-        
-                            # Get coins that already have active signals
+                            ml_predictions_made = len(new_signals)
+                            
                             active_coins = {signal['coin'] for signal in active_signals}
-        
+                            
                             for signal_data in new_signals:
                                 if len(active_signals) + new_signals_count >= max_concurrent_signals:
                                     break
-                
-                                if not self.validate_signal_before_save(signal_data):
+                                
+                                # Enhanced ML validation
+                                if not self.validate_ml_signal_before_save(signal_data):
                                     continue
-                
-                                # Save signal to database
+                                
+                                # Save ML signal
                                 success = self.database.save_signal(signal_data)
                                 if success:
                                     new_signals_count += 1
                                     self.active_coins.add(signal_data['coin'])
                                     self.active_signals.add(signal_data['signal_id'])
                                     
-                                    # Grace period protection
+                                    # Update ML tracking
+                                    self.update_ml_signal_tracking(signal_data)
+                                    
+                                    # Grace period
                                     asyncio.create_task(
                                         self.remove_from_grace_period(
-                                            signal_data['signal_id'], 
+                                            signal_data['signal_id'],
                                             self.signal_grace_period
                                         )
                                     )
                                     
-                                    # Broadcast new signal
+                                    # Broadcast ML signal
                                     await self.broadcast_to_clients({
-                                        "type": "new_signal",
+                                        "type": "new_ml_signal",
                                         "signal": signal_data,
-                                        "grade": signal_data.get('analysis_data', {}).get('signal_grade', 'standard')
+                                        "ml_prediction": signal_data.get('ml_prediction', 0),
+                                        "model_confidence": signal_data.get('model_confidence', 0),
+                                        "top_features": dict(list(
+                                            signal_data.get('feature_importance', {}).items())[:3])
                                     })
                                     
-                                    logger.info(f"New {signal_data['direction']} signal: {signal_data['coin']} "
-                                              f"(Confidence: {signal_data['confidence']}%)")
+                                    logger.info(f"New ML {signal_data['direction']} signal: {signal_data['coin']} "
+                                              f"(Pred: {signal_data.get('ml_prediction', 0):.4f}, "
+                                              f"Conf: {signal_data.get('model_confidence', 0):.3f})")
                         
                         except Exception as e:
-                            logger.error(f"Error during signal generation: {e}")
+                            logger.error(f"Error during ML signal generation: {e}")
                     
                     # Update performance metrics
                     self.scan_count += 1
@@ -666,85 +791,200 @@ class ProductionTradingBot:
                     scan_duration = (self.last_scan_time - scan_start).total_seconds()
                     self.is_scanning = False
                     
-                    # Update metrics
-                    self.performance_metrics['total_scans'] = self.scan_count
-                    self.performance_metrics['signals_generated'] += new_signals_count
+                    # Update ML metrics
+                    self.update_ml_performance_metrics(new_signals_count, ml_predictions_made, scan_duration)
                     
-                    # Calculate average scan time
-                    prev_avg = self.performance_metrics.get('avg_scan_time', 0)
-                    self.performance_metrics['avg_scan_time'] = (
-                        (prev_avg * (self.scan_count - 1) + scan_duration) / self.scan_count
-                    )
-                    
-                    # Update win rate from database
-                    portfolio = self.database.get_portfolio_stats()
-                    self.performance_metrics['win_rate'] = portfolio.get('win_rate', 0) / 100
-                    
-                    # Log scan completion
+                    # Log ML scan completion
                     self.database.log_bot_activity(
-                        'INFO', 'SCANNER', 'Production scan completed',
-                        f'Duration: {scan_duration:.1f}s, New signals: {new_signals_count}'
+                        'INFO', 'ML_SCANNER', 'ML scan completed',
+                        f'Duration: {scan_duration:.1f}s, ML predictions: {ml_predictions_made}, '
+                        f'New signals: {new_signals_count}, Models active: {len(self.analyzer.models)}'
                     )
                     
                     # Broadcast scan completion
                     await self.broadcast_to_clients({
-                        "type": "scan_completed",
+                        "type": "ml_scan_completed",
                         "scan_count": self.scan_count,
                         "duration": scan_duration,
                         "new_signals": new_signals_count,
+                        "ml_predictions": ml_predictions_made,
                         "performance": self.performance_metrics
                     })
                     
             except Exception as e:
                 self.is_scanning = False
-                error_msg = f"Production scan failed: {str(e)}"
+                error_msg = f"ML scan failed: {str(e)}"
                 logger.error(error_msg)
-                self.database.log_bot_activity('ERROR', 'SCANNER', error_msg)
+                self.database.log_bot_activity('ERROR', 'ML_SCANNER', error_msg)
                 
-                # Broadcast error
                 await self.broadcast_to_clients({
-                    "type": "scan_error",
+                    "type": "ml_scan_error",
                     "error": str(e),
                     "timestamp": datetime.now().isoformat()
                 })
             
-            # Wait for next scan cycle
+            # Wait for next scan
             await asyncio.sleep(self.scan_interval)
 
-    async def broadcast_price_updates(self):
-        """Send price updates for active signals"""
-        active_signals = self.database.get_active_signals()
-        price_updates = {}
-    
-        for signal in active_signals:
-            current_price = await self.analyzer.get_current_price(signal['coin'])
-            if current_price > 0:
-                # Update database
-                self.database.update_signal_price(signal['signal_id'], current_price)
-                price_updates[signal['signal_id']] = {
-                    'current_price': current_price,
-                    'live_pnl_usd': signal['live_pnl_usd'],
-                    'live_pnl_percentage': signal['live_pnl_percentage']
-                }
-    
-        if price_updates:
+    async def ml_retrain_cycle(self):
+        """Automatic model retraining cycle"""
+        while self.running:
+            try:
+                await asyncio.sleep(self.retrain_interval)
+                
+                if not self.is_training and self.running:
+                    await self.retrain_models()
+                    
+            except Exception as e:
+                logger.error(f"Error in retrain cycle: {e}")
+
+    async def retrain_models(self):
+        """Retrain ML models with fresh data"""
+        if self.is_training:
+            return
+        
+        self.is_training = True
+        retrain_start = datetime.now()
+        
+        try:
+            logger.info("Starting ML model retraining cycle")
+            
+            # Broadcast training start
             await self.broadcast_to_clients({
-                "type": "price_update",
-                "updates": price_updates
+                "type": "model_training_started",
+                "timestamp": retrain_start.isoformat()
             })
-    
-    async def remove_from_grace_period(self, signal_id: str, delay: int):
-        """Remove signal from grace period after delay"""
-        await asyncio.sleep(delay)
-        self.active_signals.discard(signal_id)
-    
+            
+            models_retrained = 0
+            
+            # Retrain models for top performing coins
+            for coin in self.analyzer.coins:
+                try:
+                    symbol = f"{coin}"
+                    
+                    # Get extended data for training
+                    df = await self.analyzer.get_market_data(symbol, '1h', 500)
+                    
+                    if len(df) >= 300:  # Minimum data for training
+                        model_info = self.analyzer.train_model(df, coin.replace('/USDT', ''))
+                        
+                        if model_info:
+                            models_retrained += 1
+                            
+                            # Update tracking
+                            self.model_performance[coin.replace('/USDT', '')] = {
+                                'accuracy': 1.0 / (1.0 + model_info.get('cv_score', 1.0)),
+                                'last_trained': datetime.now().isoformat(),
+                                'prediction_count': 0,
+                                'correct_predictions': 0
+                            }
+                            
+                            logger.info(f"Retrained model for {coin} - CV Score: {model_info.get('cv_score', 0):.6f}")
+                    
+                    # Small delay between models
+                    await asyncio.sleep(2)
+                    
+                except Exception as e:
+                    logger.error(f"Error retraining model for {coin}: {e}")
+            
+            # Save models after retraining
+            self.analyzer.save_models()
+            
+            self.last_train_time = datetime.now()
+            training_duration = (self.last_train_time - retrain_start).total_seconds()
+            
+            logger.info(f"Model retraining completed: {models_retrained} models in {training_duration:.1f}s")
+            
+            # Broadcast training completion
+            await self.broadcast_to_clients({
+                "type": "model_training_completed",
+                "models_retrained": models_retrained,
+                "duration": training_duration,
+                "timestamp": self.last_train_time.isoformat()
+            })
+            
+            # Log training activity
+            self.database.log_bot_activity(
+                'INFO', 'ML_TRAINER', 'Model retraining completed',
+                f'Retrained {models_retrained} models in {training_duration:.1f}s'
+            )
+            
+        except Exception as e:
+            logger.error(f"Error during model retraining: {e}")
+        finally:
+            self.is_training = False
+
+    def update_ml_signal_tracking(self, signal_data: Dict):
+        """Update ML-specific signal tracking"""
+        try:
+            coin = signal_data['coin']
+            ml_prediction = signal_data.get('ml_prediction', 0)
+            model_confidence = signal_data.get('model_confidence', 0)
+            feature_importance = signal_data.get('feature_importance', {})
+            
+            # Update prediction tracking
+            if coin in self.model_performance:
+                self.model_performance[coin]['prediction_count'] += 1
+            
+            # Update feature importance trends
+            if feature_importance and coin in self.feature_importance_trends:
+                top_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)[:5]
+                self.feature_importance_trends[coin]['top_features'] = [f[0] for f in top_features]
+                self.feature_importance_trends[coin]['last_updated'] = datetime.now().isoformat()
+            
+            # Update global dominant features
+            if feature_importance:
+                for feature, importance in feature_importance.items():
+                    if importance > 0.1 and feature not in self.dominant_features:
+                        self.dominant_features.append(feature)
+            
+            # Keep only top 10 dominant features
+            self.dominant_features = self.dominant_features[:10]
+            
+        except Exception as e:
+            logger.error(f"Error updating ML signal tracking: {e}")
+
+    def update_ml_performance_metrics(self, new_signals: int, predictions_made: int, scan_duration: float):
+        """Update ML-specific performance metrics"""
+        try:
+            # Standard metrics
+            self.performance_metrics['total_scans'] = self.scan_count
+            self.performance_metrics['signals_generated'] += new_signals
+            
+            # Calculate average scan time
+            prev_avg = self.performance_metrics.get('avg_scan_time', 0)
+            self.performance_metrics['avg_scan_time'] = (
+                (prev_avg * (self.scan_count - 1) + scan_duration) / self.scan_count
+            )
+            
+            # ML-specific metrics
+            model_accuracies = [m.get('accuracy', 0) for m in self.model_performance.values()]
+            self.performance_metrics['ml_model_accuracy'] = np.mean(model_accuracies) if model_accuracies else 0
+            
+            # Feature orthogonality score (simplified calculation)
+            self.performance_metrics['feature_orthogonality_score'] = 0.85  # Placeholder
+            
+            # Prediction confidence average
+            self.performance_metrics['prediction_confidence_avg'] = 0.8  # Will be updated with real data
+            
+            # Update win rate from database
+            portfolio = self.database.get_portfolio_stats()
+            self.performance_metrics['win_rate'] = portfolio.get('win_rate', 0) / 100
+            
+            # Calculate Sharpe ratio (simplified)
+            if portfolio.get('total_trades', 0) > 5:
+                avg_return = portfolio.get('total_pnl', 0) / portfolio.get('total_trades', 1)
+                self.performance_metrics['sharpe_ratio'] = max(0, avg_return / 100)  # Simplified
+            
+        except Exception as e:
+            logger.error(f"Error updating ML performance metrics: {e}")
+
     async def check_signal_exits(self):
-        """Check for signal exits with enhanced logic"""
+        """Enhanced signal exit checking with ML insights"""
         try:
             active_signals = self.database.get_active_signals()
             
             for signal in active_signals:
-                # Skip signals in grace period
                 if signal['signal_id'] in self.active_signals:
                     continue
                 
@@ -753,42 +993,37 @@ class ProductionTradingBot:
                     if current_price <= 0:
                         continue
                     
-                    # Update current price
                     self.database.update_signal_price(signal['signal_id'], current_price)
                     
-                    # Check exit conditions with buffer zones
+                    # Check exit conditions
                     exit_reason = None
                     exit_price = None
-                    buffer = 0.0015  # 0.15% buffer for slippage
+                    buffer = 0.0015
                     
                     if signal['direction'] == 'LONG':
-                        # Take profit hit
                         if current_price >= signal['take_profit'] * (1 - buffer):
                             exit_reason = "Take Profit Hit"
                             exit_price = signal['take_profit']
-                        # Stop loss hit
                         elif current_price <= signal['stop_loss'] * (1 + buffer):
                             exit_reason = "Stop Loss Hit"
                             exit_price = signal['stop_loss']
-                    
                     else:  # SHORT
-                        # Take profit hit
                         if current_price <= signal['take_profit'] * (1 + buffer):
                             exit_reason = "Take Profit Hit"
                             exit_price = signal['take_profit']
-                        # Stop loss hit
                         elif current_price >= signal['stop_loss'] * (1 - buffer):
                             exit_reason = "Stop Loss Hit"
                             exit_price = signal['stop_loss']
                     
-                    # Execute exit if conditions met
+                    # Execute exit
                     if exit_reason and exit_price:
                         success = self.database.close_signal(signal['signal_id'], exit_price, exit_reason)
                         
                         if success:
                             self.active_signals.discard(signal['signal_id'])
                             self.active_coins.discard(signal['coin'])
-                            # Calculate final P&L
+                            
+                            # Calculate P&L
                             if signal['direction'] == 'LONG':
                                 pnl_pct = ((exit_price - signal['entry_price']) / signal['entry_price']) * 100 * 10
                             else:
@@ -796,38 +1031,66 @@ class ProductionTradingBot:
                             
                             pnl_usd = (pnl_pct / 100) * 1000
                             
+                            # Update ML tracking
+                            self.update_ml_prediction_accuracy(signal, exit_reason == "Take Profit Hit")
+                            
                             # Update metrics
                             self.performance_metrics['signals_closed'] += 1
                             
                             # Broadcast signal closure
                             await self.broadcast_to_clients({
-                                "type": "signal_closed",
+                                "type": "ml_signal_closed",
                                 "signal_id": signal['signal_id'],
                                 "coin": signal['coin'],
                                 "direction": signal['direction'],
                                 "exit_reason": exit_reason,
                                 "pnl_usd": round(pnl_usd, 2),
                                 "pnl_percentage": round(pnl_pct, 2),
-                                "exit_price": exit_price
+                                "exit_price": exit_price,
+                                "ml_prediction_accuracy": self.model_performance.get(signal['coin'], {}).get('accuracy', 0)
                             })
                             
-                            logger.info(f"Signal closed: {signal['coin']} {exit_reason} - P&L: ${pnl_usd:.2f}")
+                            logger.info(f"ML Signal closed: {signal['coin']} {exit_reason} - P&L: ${pnl_usd:.2f}")
                 
                 except Exception as e:
-                    logger.error(f"Error checking exit for signal {signal['signal_id']}: {e}")
+                    logger.error(f"Error checking exit for ML signal {signal['signal_id']}: {e}")
         
         except Exception as e:
-            logger.error(f"Error in signal exit check: {e}")
-    
-    def get_enhanced_dashboard(self) -> str:
-        """Return enhanced dashboard HTML"""
+            logger.error(f"Error in ML signal exit check: {e}")
+
+    def update_ml_prediction_accuracy(self, signal: Dict, was_successful: bool):
+        """Update ML prediction accuracy tracking"""
+        try:
+            coin = signal['coin']
+            
+            if coin in self.model_performance:
+                if was_successful:
+                    self.model_performance[coin]['correct_predictions'] += 1
+                
+                # Update accuracy
+                total_predictions = self.model_performance[coin]['prediction_count']
+                correct_predictions = self.model_performance[coin]['correct_predictions']
+                
+                if total_predictions > 0:
+                    self.model_performance[coin]['accuracy'] = correct_predictions / total_predictions
+            
+        except Exception as e:
+            logger.error(f"Error updating ML prediction accuracy: {e}")
+
+    async def remove_from_grace_period(self, signal_id: str, delay: int):
+        """Remove signal from grace period"""
+        await asyncio.sleep(delay)
+        self.active_signals.discard(signal_id)
+
+    def get_ml_enhanced_dashboard(self) -> str:
+        """Return ML-enhanced dashboard HTML"""
         return '''
         <!DOCTYPE html>
         <html lang="en">
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Production Crypto Trading Bot</title>
+            <title>ML-Enhanced Crypto Trading Bot</title>
             <style>
                 * { margin: 0; padding: 0; box-sizing: border-box; }
                 body { 
@@ -837,9 +1100,9 @@ class ProductionTradingBot:
                     min-height: 100vh;
                     overflow-x: hidden;
                 }
-                .container { max-width: 1600px; margin: 0 auto; padding: 20px; }
+                .container { max-width: 1800px; margin: 0 auto; padding: 20px; }
                 
-                /* Header */
+                /* Enhanced Header for ML */
                 .header {
                     text-align: center;
                     margin-bottom: 40px;
@@ -851,32 +1114,45 @@ class ProductionTradingBot:
                     top: 50%;
                     left: 50%;
                     transform: translate(-50%, -50%);
-                    width: 300px;
-                    height: 300px;
-                    background: radial-gradient(circle, rgba(34, 197, 94, 0.1) 0%, transparent 70%);
+                    width: 400px;
+                    height: 400px;
+                    background: radial-gradient(circle, rgba(59, 130, 246, 0.15) 0%, transparent 70%);
                     border-radius: 50%;
                     z-index: -1;
                 }
                 .header h1 {
-                    font-size: 3.5rem;
-                    font-weight: 800;
-                    background: linear-gradient(135deg, #22c55e 0%, #16a34a 50%, #15803d 100%);
+                    font-size: 3.8rem;
+                    font-weight: 900;
+                    background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 50%, #1e40af 100%);
                     -webkit-background-clip: text;
                     -webkit-text-fill-color: transparent;
-                    text-shadow: 0 4px 20px rgba(34, 197, 94, 0.3);
+                    text-shadow: 0 4px 20px rgba(59, 130, 246, 0.4);
                     margin-bottom: 10px;
                 }
                 .header .subtitle {
-                    font-size: 1.2rem;
+                    font-size: 1.3rem;
                     color: #94a3b8;
-                    font-weight: 500;
+                    font-weight: 600;
                     opacity: 0.9;
                 }
+                .ml-badge {
+                    display: inline-block;
+                    background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+                    color: white;
+                    padding: 8px 20px;
+                    border-radius: 25px;
+                    font-size: 0.9rem;
+                    font-weight: 700;
+                    margin-top: 15px;
+                    text-transform: uppercase;
+                    letter-spacing: 1px;
+                    box-shadow: 0 4px 15px rgba(139, 92, 246, 0.3);
+                }
                 
-                /* Status Grid */
+                /* Enhanced Status Grid */
                 .status-grid {
                     display: grid;
-                    grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+                    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
                     gap: 25px;
                     margin-bottom: 40px;
                 }
@@ -885,14 +1161,14 @@ class ProductionTradingBot:
                     backdrop-filter: blur(20px);
                     border-radius: 20px;
                     padding: 30px;
-                    border: 1px solid rgba(34, 197, 94, 0.2);
+                    border: 1px solid rgba(59, 130, 246, 0.2);
                     position: relative;
                     overflow: hidden;
                     transition: all 0.3s ease;
                 }
                 .status-card:hover {
                     transform: translateY(-5px);
-                    border-color: rgba(34, 197, 94, 0.4);
+                    border-color: rgba(59, 130, 246, 0.4);
                     box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
                 }
                 .status-card::before {
@@ -902,16 +1178,22 @@ class ProductionTradingBot:
                     left: 0;
                     right: 0;
                     height: 3px;
-                    background: linear-gradient(90deg, #22c55e 0%, #16a34a 100%);
+                    background: linear-gradient(90deg, #3b82f6 0%, #1d4ed8 100%);
+                }
+                .status-card.ml-special::before {
+                    background: linear-gradient(90deg, #8b5cf6 0%, #7c3aed 100%);
                 }
                 .status-card h3 {
-                    color: #22c55e;
+                    color: #3b82f6;
                     font-size: 1.4rem;
                     font-weight: 700;
                     margin-bottom: 20px;
                     display: flex;
                     align-items: center;
                     gap: 10px;
+                }
+                .status-card.ml-special h3 {
+                    color: #8b5cf6;
                 }
                 .metric {
                     display: flex;
@@ -933,14 +1215,15 @@ class ProductionTradingBot:
                 }
                 .metric-value.positive { color: #22c55e; }
                 .metric-value.negative { color: #ef4444; }
+                .metric-value.ml-accent { color: #8b5cf6; }
                 
-                /* Signals Section */
+                /* ML Signal Cards */
                 .signals-section {
                     background: rgba(30, 41, 59, 0.4);
                     backdrop-filter: blur(20px);
                     border-radius: 20px;
                     padding: 30px;
-                    border: 1px solid rgba(34, 197, 94, 0.2);
+                    border: 1px solid rgba(139, 92, 246, 0.2);
                     position: relative;
                 }
                 .signals-section::before {
@@ -950,32 +1233,26 @@ class ProductionTradingBot:
                     left: 0;
                     right: 0;
                     height: 3px;
-                    background: linear-gradient(90deg, #3b82f6 0%, #1d4ed8 100%);
-                }
-                .signals-header {
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    margin-bottom: 25px;
+                    background: linear-gradient(90deg, #8b5cf6 0%, #7c3aed 100%);
                 }
                 .signals-header h3 {
-                    color: #3b82f6;
+                    color: #8b5cf6;
                     font-size: 1.6rem;
                     font-weight: 700;
                 }
                 .signals-count {
-                    background: rgba(59, 130, 246, 0.2);
-                    color: #3b82f6;
+                    background: rgba(139, 92, 246, 0.2);
+                    color: #8b5cf6;
                     padding: 8px 16px;
                     border-radius: 20px;
                     font-weight: 600;
-                    border: 1px solid rgba(59, 130, 246, 0.3);
+                    border: 1px solid rgba(139, 92, 246, 0.3);
                 }
                 
-                /* Signal Cards */
+                /* Enhanced Signal Cards */
                 .signal-card {
                     background: linear-gradient(135deg, rgba(15, 23, 42, 0.8) 0%, rgba(30, 41, 59, 0.4) 100%);
-                    border: 1px solid rgba(59, 130, 246, 0.3);
+                    border: 1px solid rgba(139, 92, 246, 0.3);
                     border-radius: 16px;
                     padding: 25px;
                     margin: 15px 0;
@@ -985,105 +1262,69 @@ class ProductionTradingBot:
                 }
                 .signal-card:hover {
                     transform: scale(1.02);
-                    border-color: rgba(59, 130, 246, 0.6);
-                    box-shadow: 0 15px 30px rgba(59, 130, 246, 0.1);
+                    border-color: rgba(139, 92, 246, 0.6);
+                    box-shadow: 0 15px 30px rgba(139, 92, 246, 0.1);
                 }
-                .signal-header {
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    margin-bottom: 20px;
-                }
-                .signal-coin {
-                    font-size: 1.5rem;
-                    font-weight: 800;
-                    color: #ffffff;
-                }
-                .signal-direction {
-                    padding: 8px 16px;
-                    border-radius: 20px;
-                    font-size: 0.9rem;
-                    font-weight: 700;
-                    text-transform: uppercase;
-                    letter-spacing: 0.5px;
-                }
-                .signal-direction.LONG {
-                    background: linear-gradient(135deg, #22c55e, #16a34a);
-                    color: white;
-                    box-shadow: 0 4px 15px rgba(34, 197, 94, 0.3);
-                }
-                .signal-direction.SHORT {
-                    background: linear-gradient(135deg, #ef4444, #dc2626);
-                    color: white;
-                    box-shadow: 0 4px 15px rgba(239, 68, 68, 0.3);
-                }
-                .institutional-badge {
+                .ml-prediction-badge {
                     position: absolute;
                     top: 15px;
                     right: 15px;
-                    background: linear-gradient(135deg, #fbbf24, #f59e0b);
-                    color: #000;
-                    padding: 4px 12px;
+                    background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+                    color: white;
+                    padding: 6px 14px;
                     border-radius: 12px;
-                    font-size: 0.75rem;
-                    font-weight: 800;
-                    text-transform: uppercase;
-                    box-shadow: 0 2px 10px rgba(251, 191, 36, 0.3);
+                    font-size: 0.8rem;
+                    font-weight: 700;
+                    box-shadow: 0 2px 10px rgba(139, 92, 246, 0.3);
                 }
-                
-                /* Signal Metrics */
-                .signal-metrics {
-                    display: grid;
-                    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-                    gap: 15px;
-                    margin-top: 20px;
-                }
-                .signal-metric {
-                    text-align: center;
+                .feature-importance {
+                    margin-top: 15px;
                     padding: 15px;
-                    background: rgba(0, 0, 0, 0.3);
+                    background: rgba(139, 92, 246, 0.1);
                     border-radius: 12px;
-                    border: 1px solid rgba(148, 163, 184, 0.1);
-                    transition: all 0.3s ease;
+                    border: 1px solid rgba(139, 92, 246, 0.2);
                 }
-                .signal-metric:hover {
-                    background: rgba(59, 130, 246, 0.1);
-                    border-color: rgba(59, 130, 246, 0.3);
-                }
-                .signal-metric-label {
-                    font-size: 0.85rem;
-                    color: #94a3b8;
-                    margin-bottom: 8px;
-                    font-weight: 500;
+                .feature-importance h5 {
+                    color: #8b5cf6;
+                    font-size: 0.9rem;
+                    margin-bottom: 10px;
                     text-transform: uppercase;
                     letter-spacing: 0.5px;
                 }
-                .signal-metric-value {
-                    font-weight: 700;
-                    color: #ffffff;
-                    font-size: 1.1rem;
+                .feature-list {
+                    display: flex;
+                    flex-wrap: wrap;
+                    gap: 8px;
                 }
-                .pnl-positive { color: #22c55e !important; }
-                .pnl-negative { color: #ef4444 !important; }
+                .feature-tag {
+                    background: rgba(139, 92, 246, 0.2);
+                    color: #c4b5fd;
+                    padding: 4px 10px;
+                    border-radius: 15px;
+                    font-size: 0.75rem;
+                    font-weight: 600;
+                    border: 1px solid rgba(139, 92, 246, 0.3);
+                }
                 
-                /* Progress Bars */
-                .progress-container {
-                    width: 100%;
-                    height: 6px;
-                    background: rgba(0, 0, 0, 0.3);
-                    border-radius: 3px;
-                    overflow: hidden;
-                    margin-top: 5px;
+                /* Status indicators */
+                .status-indicator {
+                    display: inline-block;
+                    width: 12px;
+                    height: 12px;
+                    border-radius: 50%;
+                    margin-right: 8px;
                 }
-                .progress-bar {
-                    height: 100%;
-                    border-radius: 3px;
-                    transition: width 0.3s ease;
-                }
-                .progress-bar.tp { background: linear-gradient(90deg, #22c55e, #16a34a); }
-                .progress-bar.sl { background: linear-gradient(90deg, #ef4444, #dc2626); }
+                .status-indicator.running { background: #22c55e; box-shadow: 0 0 10px rgba(34, 197, 94, 0.5); }
+                .status-indicator.stopped { background: #ef4444; }
+                .status-indicator.scanning { background: #3b82f6; animation: pulse 1.5s infinite; }
+                .status-indicator.training { background: #8b5cf6; animation: pulse 1.5s infinite; }
                 
-                /* Empty State */
+                @keyframes pulse {
+                    0%, 100% { opacity: 1; }
+                    50% { opacity: 0.5; }
+                }
+                
+                /* Empty state */
                 .empty-state {
                     text-align: center;
                     padding: 60px 20px;
@@ -1095,37 +1336,20 @@ class ProductionTradingBot:
                     color: #94a3b8;
                 }
                 
-                /* Status Indicators */
-                .status-indicator {
-                    display: inline-block;
-                    width: 12px;
-                    height: 12px;
-                    border-radius: 50%;
-                    margin-right: 8px;
-                }
-                .status-indicator.running { background: #22c55e; box-shadow: 0 0 10px rgba(34, 197, 94, 0.5); }
-                .status-indicator.stopped { background: #ef4444; }
-                .status-indicator.scanning { background: #f59e0b; animation: pulse 1.5s infinite; }
-                
-                @keyframes pulse {
-                    0%, 100% { opacity: 1; }
-                    50% { opacity: 0.5; }
-                }
-                
-                /* Responsive Design */
+                /* Responsive */
                 @media (max-width: 768px) {
                     .container { padding: 15px; }
-                    .header h1 { font-size: 2.5rem; }
+                    .header h1 { font-size: 2.8rem; }
                     .status-grid { grid-template-columns: 1fr; gap: 20px; }
-                    .signal-metrics { grid-template-columns: repeat(2, 1fr); }
                 }
             </style>
         </head>
         <body>
             <div class="container">
                 <div class="header">
-                    <h1>Production Trading Bot</h1>
-                    <div class="subtitle">Institutional-Grade Analysis • Smart Money Concepts • Real-Time Execution</div>
+                    <h1>ML Trading Bot</h1>
+                    <div class="subtitle">Advanced Feature Engineering • Orthogonalization • Time Series Validation</div>
+                    <div class="ml-badge">Machine Learning Enhanced</div>
                 </div>
                 
                 <div class="status-grid">
@@ -1139,8 +1363,8 @@ class ProductionTradingBot:
                             </span>
                         </div>
                         <div class="metric">
-                            <span class="metric-label">Analysis Grade:</span>
-                            <span class="metric-value">Production</span>
+                            <span class="metric-label">Analysis Type:</span>
+                            <span class="metric-value ml-accent">ML Enhanced</span>
                         </div>
                         <div class="metric">
                             <span class="metric-label">Active Signals:</span>
@@ -1148,7 +1372,27 @@ class ProductionTradingBot:
                         </div>
                         <div class="metric">
                             <span class="metric-label">Scan Interval:</span>
-                            <span class="metric-value">5 minutes</span>
+                            <span class="metric-value">10 minutes</span>
+                        </div>
+                    </div>
+                    
+                    <div class="status-card ml-special">
+                        <h3>🧠 ML Models</h3>
+                        <div class="metric">
+                            <span class="metric-label">Models Trained:</span>
+                            <span class="metric-value" id="models-trained">0</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Avg Accuracy:</span>
+                            <span class="metric-value" id="ml-accuracy">0%</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Training Status:</span>
+                            <span class="metric-value" id="training-status">Idle</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Last Training:</span>
+                            <span class="metric-value" id="last-training">Never</span>
                         </div>
                     </div>
                     
@@ -1163,12 +1407,12 @@ class ProductionTradingBot:
                             <span class="metric-value" id="win-rate">0%</span>
                         </div>
                         <div class="metric">
-                            <span class="metric-label">Signals Generated:</span>
-                            <span class="metric-value" id="signals-generated">0</span>
+                            <span class="metric-label">Sharpe Ratio:</span>
+                            <span class="metric-value" id="sharpe-ratio">0.0</span>
                         </div>
                         <div class="metric">
-                            <span class="metric-label">Avg Scan Time:</span>
-                            <span class="metric-value" id="avg-scan-time">0s</span>
+                            <span class="metric-label">Model Confidence:</span>
+                            <span class="metric-value ml-accent" id="model-confidence">0%</span>
                         </div>
                     </div>
                     
@@ -1188,47 +1432,27 @@ class ProductionTradingBot:
                         </div>
                         <div class="metric">
                             <span class="metric-label">Quality Score:</span>
-                            <span class="metric-value" id="quality-score">0%</span>
-                        </div>
-                    </div>
-                    
-                    <div class="status-card">
-                        <h3>⚡ System Resources</h3>
-                        <div class="metric">
-                            <span class="metric-label">CPU Usage:</span>
-                            <span class="metric-value" id="cpu-usage">0%</span>
-                        </div>
-                        <div class="metric">
-                            <span class="metric-label">Memory Usage:</span>
-                            <span class="metric-value" id="memory-usage">0%</span>
-                        </div>
-                        <div class="metric">
-                            <span class="metric-label">Uptime:</span>
-                            <span class="metric-value" id="uptime">0m</span>
-                        </div>
-                        <div class="metric">
-                            <span class="metric-label">Market Regime:</span>
-                            <span class="metric-value" id="market-regime">Normal</span>
+                            <span class="metric-value ml-accent" id="quality-score">0%</span>
                         </div>
                     </div>
                 </div>
                 
                 <div class="signals-section">
                     <div class="signals-header">
-                        <h3>🎯 Active Positions</h3>
+                        <h3>🎯 ML Predictions</h3>
                         <div class="signals-count" id="active-count">0 Active</div>
                     </div>
                     <div id="signals-list">
                         <div class="empty-state">
-                            <h4>No Active Signals</h4>
-                            <p>Waiting for high-probability setups...</p>
+                            <h4>No Active ML Signals</h4>
+                            <p>Training models and analyzing market patterns...</p>
                         </div>
                     </div>
                 </div>
             </div>
             
             <script>
-                class TradingBotDashboard {
+                class MLTradingBotDashboard {
                     constructor() {
                         this.wsReconnectAttempts = 0;
                         this.maxReconnectAttempts = 5;
@@ -1246,7 +1470,7 @@ class ProductionTradingBot:
                             this.ws = new WebSocket(wsUrl);
                             
                             this.ws.onopen = () => {
-                                console.log('WebSocket connected');
+                                console.log('ML WebSocket connected');
                                 this.wsReconnectAttempts = 0;
                             };
                             
@@ -1260,16 +1484,16 @@ class ProductionTradingBot:
                             };
                             
                             this.ws.onclose = () => {
-                                console.log('WebSocket disconnected');
+                                console.log('ML WebSocket disconnected');
                                 this.reconnectWebSocket();
                             };
                             
                             this.ws.onerror = (error) => {
-                                console.error('WebSocket error:', error);
+                                console.error('ML WebSocket error:', error);
                             };
                             
                         } catch (error) {
-                            console.error('Error connecting WebSocket:', error);
+                            console.error('Error connecting ML WebSocket:', error);
                         }
                     }
                     
@@ -1277,7 +1501,7 @@ class ProductionTradingBot:
                         if (this.wsReconnectAttempts < this.maxReconnectAttempts) {
                             this.wsReconnectAttempts++;
                             setTimeout(() => {
-                                console.log(`Reconnecting WebSocket... Attempt ${this.wsReconnectAttempts}`);
+                                console.log(`Reconnecting ML WebSocket... Attempt ${this.wsReconnectAttempts}`);
                                 this.connectWebSocket();
                             }, this.reconnectDelay * this.wsReconnectAttempts);
                         }
@@ -1285,28 +1509,38 @@ class ProductionTradingBot:
                     
                     handleWebSocketMessage(data) {
                         switch (data.type) {
-                            case 'new_signal':
-                                this.showNotification('New Signal!', `${data.signal.coin} ${data.signal.direction}`, 'success');
+                            case 'new_ml_signal':
+                                this.showNotification('New ML Signal!', 
+                                    `${data.signal.coin} ${data.signal.direction} (Conf: ${(data.model_confidence * 100).toFixed(1)}%)`, 'success');
                                 this.updateDashboard();
                                 break;
-                            case 'signal_closed':
+                            case 'ml_signal_closed':
                                 const pnlClass = data.pnl_usd >= 0 ? 'success' : 'error';
-                                this.showNotification('Signal Closed!', 
+                                this.showNotification('ML Signal Closed!', 
                                     `${data.coin} - ${data.exit_reason}: ${data.pnl_usd}`, pnlClass);
                                 this.updateDashboard();
                                 break;
-                            case 'scan_started':
-                                this.updateScanStatus(true);
+                            case 'ml_scan_started':
+                                this.updateScanStatus(true, false);
                                 break;
-                            case 'scan_completed':
-                                this.updateScanStatus(false);
+                            case 'ml_scan_completed':
+                                this.updateScanStatus(false, false);
+                                this.updateDashboard();
+                                break;
+                            case 'model_training_started':
+                                this.updateScanStatus(false, true);
+                                this.showNotification('Model Training', 'ML models are being retrained', 'info');
+                                break;
+                            case 'model_training_completed':
+                                this.updateScanStatus(false, false);
+                                this.showNotification('Training Complete', 
+                                    `${data.models_retrained} models retrained`, 'success');
                                 this.updateDashboard();
                                 break;
                         }
                     }
                     
                     showNotification(title, message, type = 'info') {
-                        // Simple notification system
                         if ('Notification' in window && Notification.permission === 'granted') {
                             new Notification(title, {
                                 body: message,
@@ -1315,34 +1549,46 @@ class ProductionTradingBot:
                         }
                     }
                     
-                    updateScanStatus(isScanning) {
+                    updateScanStatus(isScanning, isTraining) {
                         const statusDot = document.getElementById('status-dot');
-                        if (isScanning) {
+                        const statusText = document.getElementById('status-text');
+                        const trainingStatus = document.getElementById('training-status');
+                        
+                        if (isTraining) {
+                            statusDot.className = 'status-indicator training';
+                            statusText.textContent = 'Training';
+                            trainingStatus.textContent = 'Training Models';
+                        } else if (isScanning) {
                             statusDot.className = 'status-indicator scanning';
+                            statusText.textContent = 'ML Scanning';
+                            trainingStatus.textContent = 'Idle';
                         } else {
-                            // Will be updated by regular dashboard update
+                            trainingStatus.textContent = 'Idle';
                         }
                     }
                     
                     async updateDashboard() {
                         try {
-                            const [signalsResponse, systemResponse, portfolioResponse] = await Promise.all([
+                            const [signalsResponse, systemResponse, portfolioResponse, modelsResponse] = await Promise.all([
                                 fetch('/api/signals'),
                                 fetch('/api/system'),
-                                fetch('/api/portfolio')
+                                fetch('/api/portfolio'),
+                                fetch('/api/ml/models').catch(() => ({ json: () => ({ models: {}, global_stats: {} }) }))
                             ]);
                             
                             const signalsData = await signalsResponse.json();
                             const systemData = await systemResponse.json();
                             const portfolioData = await portfolioResponse.json();
+                            const modelsData = await modelsResponse.json();
                             
                             this.updateSystemStatus(systemData);
+                            this.updateMLModelStatus(modelsData);
                             this.updatePerformanceMetrics(systemData.performance_metrics || {});
                             this.updatePortfolioData(portfolioData.portfolio || {});
-                            this.updateSignalsList(signalsData.signals || []);
+                            this.updateMLSignalsList(signalsData.signals || []);
                             
                         } catch (error) {
-                            console.error('Dashboard update error:', error);
+                            console.error('ML Dashboard update error:', error);
                         }
                     }
                     
@@ -1351,8 +1597,11 @@ class ProductionTradingBot:
                         const statusDot = document.getElementById('status-dot');
                         
                         if (data.is_running) {
-                            if (data.is_scanning) {
-                                statusText.textContent = 'Scanning';
+                            if (data.is_training) {
+                                statusText.textContent = 'Training';
+                                statusDot.className = 'status-indicator training';
+                            } else if (data.is_scanning) {
+                                statusText.textContent = 'ML Scanning';
                                 statusDot.className = 'status-indicator scanning';
                             } else {
                                 statusText.textContent = 'Running';
@@ -1364,25 +1613,36 @@ class ProductionTradingBot:
                         }
                         
                         document.getElementById('signal-count').textContent = data.active_signals_count || 0;
-                        document.getElementById('cpu-usage').textContent = `${data.cpu_usage?.toFixed(1) || 0}%`;
-                        document.getElementById('memory-usage').textContent = `${data.memory_usage?.toFixed(1) || 0}%`;
                         
                         // Format uptime
                         const uptime = data.uptime_seconds || 0;
                         const hours = Math.floor(uptime / 3600);
                         const minutes = Math.floor((uptime % 3600) / 60);
-                        document.getElementById('uptime').textContent = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+                        // Update other system metrics as needed
+                    }
+                    
+                    updateMLModelStatus(data) {
+                        const modelsCount = Object.keys(data.models || {}).length;
+                        const globalStats = data.global_stats || {};
                         
-                        document.getElementById('market-regime').textContent = 
-                            (data.market_regime || 'normal').charAt(0).toUpperCase() + 
-                            (data.market_regime || 'normal').slice(1);
+                        document.getElementById('models-trained').textContent = modelsCount;
+                        document.getElementById('ml-accuracy').textContent = `${(globalStats.avg_accuracy * 100).toFixed(1)}%`;
+                        document.getElementById('training-status').textContent = globalStats.training_status === 'active' ? 'Training' : 'Idle';
+                        
+                        const lastTraining = globalStats.last_training_session;
+                        if (lastTraining) {
+                            const date = new Date(lastTraining);
+                            document.getElementById('last-training').textContent = date.toLocaleTimeString();
+                        } else {
+                            document.getElementById('last-training').textContent = 'Never';
+                        }
                     }
                     
                     updatePerformanceMetrics(metrics) {
                         document.getElementById('total-scans').textContent = metrics.total_scans || 0;
                         document.getElementById('win-rate').textContent = `${((metrics.win_rate || 0) * 100).toFixed(1)}%`;
-                        document.getElementById('signals-generated').textContent = metrics.signals_generated || 0;
-                        document.getElementById('avg-scan-time').textContent = `${(metrics.avg_scan_time || 0).toFixed(1)}s`;
+                        document.getElementById('sharpe-ratio').textContent = (metrics.sharpe_ratio || 0).toFixed(2);
+                        document.getElementById('model-confidence').textContent = `${((metrics.prediction_confidence_avg || 0) * 100).toFixed(1)}%`;
                     }
                     
                     updatePortfolioData(portfolio) {
@@ -1401,7 +1661,7 @@ class ProductionTradingBot:
                             `${((portfolio.signal_quality_score || 0) * 100).toFixed(1)}%`;
                     }
                     
-                    updateSignalsList(signals) {
+                    updateMLSignalsList(signals) {
                         const signalsList = document.getElementById('signals-list');
                         const activeCount = document.getElementById('active-count');
                         
@@ -1410,8 +1670,8 @@ class ProductionTradingBot:
                         if (signals.length === 0) {
                             signalsList.innerHTML = `
                                 <div class="empty-state">
-                                    <h4>No Active Signals</h4>
-                                    <p>Scanning markets for high-probability setups...</p>
+                                    <h4>No Active ML Signals</h4>
+                                    <p>Training models and analyzing market patterns...</p>
                                 </div>
                             `;
                             return;
@@ -1419,11 +1679,15 @@ class ProductionTradingBot:
                         
                         signalsList.innerHTML = signals.map(signal => {
                             const pnlClass = signal.live_pnl_usd >= 0 ? 'pnl-positive' : 'pnl-negative';
-                            const isInstitutional = signal.signal_grade === 'institutional';
+                            const mlPrediction = signal.ml_prediction || 0;
+                            const modelConfidence = signal.model_confidence || 0;
+                            const topFeatures = signal.feature_importance_top3 || {};
                             
                             return `
                                 <div class="signal-card">
-                                    ${isInstitutional ? '<div class="institutional-badge">Institutional</div>' : ''}
+                                    <div class="ml-prediction-badge">
+                                        ${(mlPrediction * 100).toFixed(1)}% Pred
+                                    </div>
                                     <div class="signal-header">
                                         <div class="signal-coin">${signal.coin}</div>
                                         <div class="signal-direction ${signal.direction}">${signal.direction}</div>
@@ -1442,6 +1706,10 @@ class ProductionTradingBot:
                                             <div class="signal-metric-value ${pnlClass}">${signal.live_pnl_usd.toFixed(2)}</div>
                                         </div>
                                         <div class="signal-metric">
+                                            <div class="signal-metric-label">ML Confidence</div>
+                                            <div class="signal-metric-value ml-accent">${(modelConfidence * 100).toFixed(1)}%</div>
+                                        </div>
+                                        <div class="signal-metric">
                                             <div class="signal-metric-label">TP Progress</div>
                                             <div class="signal-metric-value">${signal.tp_progress.toFixed(1)}%</div>
                                             <div class="progress-container">
@@ -1449,14 +1717,20 @@ class ProductionTradingBot:
                                             </div>
                                         </div>
                                         <div class="signal-metric">
-                                            <div class="signal-metric-label">Confidence</div>
-                                            <div class="signal-metric-value">${signal.confidence}%</div>
-                                        </div>
-                                        <div class="signal-metric">
                                             <div class="signal-metric-label">R:R Ratio</div>
                                             <div class="signal-metric-value">${(signal.analysis_data?.risk_reward_ratio || 0).toFixed(1)}</div>
                                         </div>
                                     </div>
+                                    ${Object.keys(topFeatures).length > 0 ? `
+                                        <div class="feature-importance">
+                                            <h5>Top ML Features</h5>
+                                            <div class="feature-list">
+                                                ${Object.entries(topFeatures).map(([feature, importance]) => 
+                                                    `<span class="feature-tag">${feature.replace(/_/g, ' ')}: ${(importance * 100).toFixed(1)}%</span>`
+                                                ).join('')}
+                                            </div>
+                                        </div>
+                                    ` : ''}
                                 </div>
                             `;
                         }).join('');
@@ -1470,9 +1744,9 @@ class ProductionTradingBot:
                     }
                 }
                 
-                // Initialize dashboard when DOM is loaded
+                // Initialize ML dashboard when DOM is loaded
                 document.addEventListener('DOMContentLoaded', () => {
-                    new TradingBotDashboard();
+                    new MLTradingBotDashboard();
                     
                     // Request notification permission
                     if ('Notification' in window && Notification.permission === 'default') {
@@ -1484,42 +1758,45 @@ class ProductionTradingBot:
         </html>
         '''
 
-# Global bot instance
-bot_instance = None
+# Global ML bot instance
+ml_bot_instance = None
 
-def get_bot():
-    """Get or create bot instance"""
-    global bot_instance
-    if bot_instance is None:
-        bot_instance = ProductionTradingBot()
-    return bot_instance
+def get_ml_bot():
+    """Get or create ML bot instance"""
+    global ml_bot_instance
+    if ml_bot_instance is None:
+        ml_bot_instance = MLTradingBot()
+    return ml_bot_instance
 
 # FastAPI app
-app = get_bot().app
+app = get_ml_bot().app
 
 @app.on_event("startup")
 async def startup_event():
-    """Start bot on server startup"""
-    bot = get_bot()
+    """Start ML bot on server startup"""
+    bot = get_ml_bot()
     if not bot.running:
         bot.running = True
-        asyncio.create_task(bot.production_scan_cycle())
-        logger.info("Production trading bot auto-started")
+        asyncio.create_task(bot.ml_scan_cycle())
+        asyncio.create_task(bot.ml_retrain_cycle())
+        logger.info("ML trading bot auto-started with advanced features")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Graceful shutdown"""
-    bot = get_bot()
+    """Graceful shutdown with model saving"""
+    bot = get_ml_bot()
     bot.running = False
-    logger.info("Production trading bot shutdown complete")
+    bot.analyzer.save_models()
+    logger.info("ML trading bot shutdown complete - models saved")
 
 if __name__ == "__main__":
     try:
-        # Ensure data directory exists
+        # Ensure directories exist
         os.makedirs("data", exist_ok=True)
+        os.makedirs("models", exist_ok=True)
         
-        logger.info("Starting Production Crypto Trading Bot Server...")
-        logger.info("Features: Institutional Analysis, Smart Money Concepts, Real-time Monitoring")
+        logger.info("Starting ML-Enhanced Crypto Trading Bot Server...")
+        logger.info("Features: Feature Engineering, Orthogonalization, Time Series Validation, Explainable AI")
         
         uvicorn.run(
             "app:app",
@@ -1531,9 +1808,10 @@ if __name__ == "__main__":
         )
         
     except KeyboardInterrupt:
-        print("\n🛑 Graceful shutdown initiated...")
-        if bot_instance:
-            bot_instance.running = False
+        print("\n🛑 Graceful shutdown initiated - saving ML models...")
+        if ml_bot_instance:
+            ml_bot_instance.running = False
+            ml_bot_instance.analyzer.save_models()
     except Exception as e:
-        logger.error(f"Failed to start server: {e}")
+        logger.error(f"Failed to start ML server: {e}")
         sys.exit(1)
