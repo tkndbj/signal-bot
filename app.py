@@ -71,6 +71,7 @@ class ProductionTradingBot:
         
         # Signal management
         self.active_signals: Set[str] = set()
+        self.active_coins: Set[str] = set()
         self.signal_grace_period = 300  # 5 minutes grace period
         self.scanning_lock = asyncio.Lock()
         
@@ -94,6 +95,45 @@ class ProductionTradingBot:
         # Graceful shutdown handling
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
+
+    def validate_signal_before_save(self, signal_data: Dict) -> bool:
+        """Production-grade signal validation"""
+        try:
+            # Check required fields
+            required_fields = ['signal_id', 'coin', 'direction', 'entry_price', 'take_profit', 'stop_loss']
+            for field in required_fields:
+                if field not in signal_data:
+                    logger.error(f"Missing required field: {field}")
+                    return False
+        
+            # Check price logic
+            entry = signal_data['entry_price']
+            tp = signal_data['take_profit']
+            sl = signal_data['stop_loss']
+            direction = signal_data['direction']
+        
+            if direction == 'LONG':
+                if not (sl < entry < tp):
+                    logger.error(f"Invalid LONG signal prices: SL={sl}, Entry={entry}, TP={tp}")
+                    return False
+            else:  # SHORT
+                if not (tp < entry < sl):
+                    logger.error(f"Invalid SHORT signal prices: TP={tp}, Entry={entry}, SL={sl}")
+                    return False
+        
+            # Check if coin already active
+            active_signals = self.database.get_active_signals()
+            active_coins = {signal['coin'] for signal in active_signals}
+        
+            if signal_data['coin'] in active_coins:
+                logger.warning(f"Coin {signal_data['coin']} already has active signal")
+                return False
+        
+            return True
+        
+        except Exception as e:
+            logger.error(f"Error validating signal: {e}")
+            return False
     
     def signal_handler(self, signum, frame):
         """Handle graceful shutdown"""
@@ -106,6 +146,7 @@ class ProductionTradingBot:
         try:
             # Clean up any orphaned signals
             active_signals = self.database.get_active_signals()
+            self.active_coins = {signal['coin'] for signal in active_signals}
             stale_signals = []
             
             current_time = datetime.now()
@@ -188,7 +229,57 @@ class ProductionTradingBot:
             except Exception as e:
                 logger.debug(f"WebSocket error: {e}")
                 self.websocket_connections.discard(websocket)
-        
+
+        @self.app.get("/api/alerts")
+        async def get_recent_alerts():
+            """Get recent signals for alerts section"""
+            try:
+                # Get both active and recently closed signals
+                with self.database.get_db_connection() as conn:
+                    cursor = conn.cursor()
+            
+                    cursor.execute('''
+                    SELECT s.signal_id, s.coin, s.direction, s.entry_price, s.exit_price,
+                        s.status, s.created_at, s.closed_at, s.exit_reason, s.confidence,
+                        tr.pnl_usd, tr.pnl_percentage
+                    FROM signals s
+                    LEFT JOIN trade_results tr ON s.signal_id = tr.signal_id
+                    WHERE s.created_at >= datetime('now', '-7 days')
+                    ORDER BY s.created_at DESC
+                    LIMIT 20
+                    ''')
+            
+                    alerts = []
+                    for row in cursor.fetchall():
+                        row_dict = dict(row)
+                
+                        # Format the alert data
+                        alert = {
+                            'signal_id': row_dict['signal_id'],
+                            'coin': row_dict['coin'],
+                            'direction': row_dict['direction'],
+                            'entry_price': row_dict['entry_price'],
+                            'status': row_dict['status'],
+                            'confidence': row_dict['confidence'],
+                            'timestamp': row_dict['created_at'],
+                            'pnl_usd': row_dict['pnl_usd'] or 0,
+                            'pnl_percentage': row_dict['pnl_percentage'] or 0,
+                            'exit_reason': row_dict['exit_reason']
+                        }
+                
+                        # Add status-specific info
+                        if row_dict['status'] == 'closed':
+                            alert['closed_at'] = row_dict['closed_at']
+                            alert['exit_price'] = row_dict['exit_price']
+                
+                        alerts.append(alert)
+            
+                    return JSONResponse(content={"alerts": alerts})
+            
+            except Exception as e:
+                logger.error(f"Error getting alerts: {e}")
+                return JSONResponse(content={"error": str(e)}, status_code=500)
+
         @self.app.get("/api/signals")
         async def get_signals():
             """Get active signals with live P&L"""
@@ -530,15 +621,22 @@ class ProductionTradingBot:
                     if len(active_signals) < max_concurrent_signals:
                         try:
                             new_signals = await self.analyzer.scan_all_coins()
-                            
+        
+                            # Get coins that already have active signals
+                            active_coins = {signal['coin'] for signal in active_signals}
+        
                             for signal_data in new_signals:
                                 if len(active_signals) + new_signals_count >= max_concurrent_signals:
                                     break
-                                
+                
+                                if not self.validate_signal_before_save(signal_data):
+                                    continue
+                
                                 # Save signal to database
                                 success = self.database.save_signal(signal_data)
                                 if success:
                                     new_signals_count += 1
+                                    self.active_coins.add(signal_data['coin'])
                                     self.active_signals.add(signal_data['signal_id'])
                                     
                                     # Grace period protection
@@ -612,6 +710,28 @@ class ProductionTradingBot:
             
             # Wait for next scan cycle
             await asyncio.sleep(self.scan_interval)
+
+    async def broadcast_price_updates(self):
+        """Send price updates for active signals"""
+        active_signals = self.database.get_active_signals()
+        price_updates = {}
+    
+        for signal in active_signals:
+            current_price = await self.analyzer.get_current_price(signal['coin'])
+            if current_price > 0:
+                # Update database
+                self.database.update_signal_price(signal['signal_id'], current_price)
+                price_updates[signal['signal_id']] = {
+                    'current_price': current_price,
+                    'live_pnl_usd': signal['live_pnl_usd'],
+                    'live_pnl_percentage': signal['live_pnl_percentage']
+                }
+    
+        if price_updates:
+            await self.broadcast_to_clients({
+                "type": "price_update",
+                "updates": price_updates
+            })
     
     async def remove_from_grace_period(self, signal_id: str, delay: int):
         """Remove signal from grace period after delay"""
@@ -666,6 +786,8 @@ class ProductionTradingBot:
                         success = self.database.close_signal(signal['signal_id'], exit_price, exit_reason)
                         
                         if success:
+                            self.active_signals.discard(signal['signal_id'])
+                            self.active_coins.discard(signal['coin'])
                             # Calculate final P&L
                             if signal['direction'] == 'LONG':
                                 pnl_pct = ((exit_price - signal['entry_price']) / signal['entry_price']) * 100 * 10

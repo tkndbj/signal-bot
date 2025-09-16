@@ -837,7 +837,7 @@
               "SIGNAL",
               `New ${data.signal.direction} signal: ${data.signal.coin}`
             );
-            refreshData();
+            refreshData(); // This will update both signals and alerts
             break;
           case "signal_closed":
             addLog(
@@ -845,7 +845,10 @@
               "SIGNAL",
               `Signal closed: ${data.coin} - ${data.exit_reason}`
             );
-            refreshData();
+            refreshData(); // This will update both signals and alerts
+            break;
+          case "price_update":
+            updateSignalPricesLive(data.updates);
             break;
           case "scan_started":
             addLog(
@@ -858,7 +861,7 @@
             addLog(
               "INFO",
               "SCANNER",
-              `Scan completed: ${data.signals_found} signals found`
+              `Scan completed: ${data.new_signals} signals found`
             );
             document.getElementById("scan-count").textContent = data.scan_count;
             break;
@@ -967,20 +970,96 @@
           .padStart(2, "0")}`;
       }
 
+      function updateRecentAlerts(alerts) {
+        const alertsContainer = document.getElementById("recent-alerts");
+
+        if (!alerts || alerts.length === 0) {
+          alertsContainer.innerHTML = `
+            <div style="color: var(--text-secondary); font-size: 11px">
+                No recent alerts
+            </div>
+        `;
+          return;
+        }
+
+        alertsContainer.innerHTML = alerts
+          .map((alert) => {
+            const pnlClass = alert.pnl_usd >= 0 ? "positive" : "negative";
+            const statusBadge =
+              alert.status === "active"
+                ? '<span style="color: var(--accent-green); font-weight: 600;">●</span>'
+                : '<span style="color: var(--text-secondary);">○</span>';
+
+            const timeAgo = formatTimeAgo(new Date(alert.timestamp));
+
+            return `
+            <div style="
+                padding: 8px 0; 
+                border-bottom: 1px solid rgba(42, 42, 42, 0.3);
+                font-size: 11px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            ">
+                <div style="flex: 1;">
+                    <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 2px;">
+                        ${statusBadge}
+                        <span style="color: var(--accent-green); font-weight: 600;">${
+                          alert.coin
+                        }</span>
+                        <span style="color: var(--text-secondary); font-size: 9px;">${
+                          alert.direction
+                        }</span>
+                    </div>
+                    <div style="color: var(--text-secondary); font-size: 10px;">
+                        Entry: $${alert.entry_price.toFixed(4)} • ${timeAgo}
+                    </div>
+                </div>
+                <div style="text-align: right;">
+                    <div class="${pnlClass}" style="font-weight: 600;">
+                        $${alert.pnl_usd.toFixed(2)}
+                    </div>
+                    <div style="color: var(--text-secondary); font-size: 9px;">
+                        ${alert.confidence}%
+                    </div>
+                </div>
+            </div>
+        `;
+          })
+          .join("");
+      }
+
+      function formatTimeAgo(date) {
+        const now = new Date();
+        const diffMs = now - date;
+        const diffMins = Math.floor(diffMs / 60000);
+        const diffHours = Math.floor(diffMins / 60);
+        const diffDays = Math.floor(diffHours / 24);
+
+        if (diffMins < 1) return "just now";
+        if (diffMins < 60) return `${diffMins}m ago`;
+        if (diffHours < 24) return `${diffHours}h ago`;
+        return `${diffDays}d ago`;
+      }
+
       async function refreshData() {
         try {
-          const [signalsResp, portfolioResp, systemResp] = await Promise.all([
-            fetch("/api/signals"),
-            fetch("/api/portfolio"),
-            fetch("/api/system").catch(() => ({ ok: false })),
-          ]);
+          const [signalsResp, portfolioResp, systemResp, alertsResp] =
+            await Promise.all([
+              fetch("/api/signals"),
+              fetch("/api/portfolio"),
+              fetch("/api/system").catch(() => ({ ok: false })),
+              fetch("/api/alerts"),
+            ]);
 
           const signalsData = await signalsResp.json();
           const portfolioData = await portfolioResp.json();
           const systemData = systemResp.ok ? await systemResp.json() : null;
+          const alertsData = await alertsResp.json();
 
           updateSignalsDisplay(signalsData.signals || []);
           updatePortfolioStats(portfolioData.portfolio || {});
+          updateRecentAlerts(alertsData.alerts || []); // Add this line
 
           if (systemData) {
             updateSystemStats(systemData);
@@ -1178,7 +1257,7 @@
         refreshData();
 
         setInterval(updateUptime, 1000);
-        setInterval(refreshData, 15000); // Refresh every 15 seconds
+        setInterval(refreshData, 120000); // Refresh every 15 seconds
 
         // Load system stats periodically
         setInterval(loadSystemUptime, 30000);

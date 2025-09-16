@@ -282,21 +282,33 @@ class Database:
         try:
             with self.get_db_connection() as conn:
                 cursor = conn.cursor()
-                
+        
                 # Check if signal already exists
                 cursor.execute('SELECT id FROM signals WHERE signal_id = ?', (signal_data['signal_id'],))
                 if cursor.fetchone():
                     logger.warning(f"Signal {signal_data['signal_id']} already exists")
                     return False
-                
-                # Validate signal data
+            
+                # CRITICAL FIX: Check if coin already has active signal
+                cursor.execute('''
+                    SELECT signal_id FROM signals 
+                    WHERE coin = ? AND status = 'active'
+                    LIMIT 1
+                ''', (signal_data['coin'],))
+            
+                existing_signal = cursor.fetchone()
+                if existing_signal:
+                    logger.warning(f"Coin {signal_data['coin']} already has active signal: {existing_signal[0]}")
+                    return False
+        
+                # Validate required fields
                 required_fields = ['signal_id', 'timestamp', 'coin', 'direction', 
-                                 'entry_price', 'take_profit', 'stop_loss', 'confidence']
+                                'entry_price', 'take_profit', 'stop_loss', 'confidence']
                 for field in required_fields:
                     if field not in signal_data:
                         logger.error(f"Missing required field: {field}")
                         return False
-                
+        
                 # Insert signal
                 cursor.execute('''
                 INSERT INTO signals (
@@ -317,7 +329,7 @@ class Database:
                     json.dumps(signal_data.get('indicators', {})),
                     'active'
                 ))
-                
+        
                 # Create corresponding trade result entry
                 cursor.execute('''
                 INSERT INTO trade_results (
@@ -330,10 +342,10 @@ class Database:
                     10,    # 10x leverage
                     'open'
                 ))
-                
+        
                 logger.info(f"Signal saved successfully: {signal_data['signal_id']}")
                 return True
-                
+        
         except Exception as e:
             logger.error(f"Error saving signal: {e}")
             return False
