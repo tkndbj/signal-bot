@@ -215,8 +215,7 @@ class MLEnhancedDatabase:
                 avg_confidence REAL DEFAULT 0,
                 feature_count INTEGER DEFAULT 0,
                 training_time_ms INTEGER,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                INDEX (coin, timestamp)
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP                
             )
             ''')
             
@@ -275,8 +274,7 @@ class MLEnhancedDatabase:
                 validation_score REAL NOT NULL,
                 feature_count INTEGER,
                 samples_count INTEGER,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                INDEX (coin, model_type, timestamp)
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP                
             )
             ''')
             
