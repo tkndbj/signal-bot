@@ -91,8 +91,8 @@ class MLTradingAnalyzer:
         self.max_signals_per_scan = 7
         
         # ML Model parameters
-        self.lookback_periods = 200  # For training
-        self.min_data_points = 150
+        self.lookback_periods = 150  # For training
+        self.min_data_points = 100
         self.prediction_horizon = 24  # Hours ahead to predict
         self.feature_selection_k = 15  # Top K features to keep
         self.cv_folds = 5  # Time series CV folds
@@ -110,7 +110,7 @@ class MLTradingAnalyzer:
         
         # Rate limiting
         self.request_delays = {}
-        self.min_request_interval = 0.5
+        self.min_request_interval = 1
         self.cache = {}
         self.cache_duration = 60
         
@@ -169,8 +169,9 @@ class MLTradingAnalyzer:
             
             # Fetch with retry logic
             ohlcv = await self._fetch_with_retry(symbol, timeframe, limit)
-            
+            logger.info(f"Fetched {len(ohlcv)} rows for {symbol}")
             if not ohlcv or len(ohlcv) < 200:
+                logger.warning(f"Insufficient rows for {symbol}: {len(ohlcv)}")
                 return pd.DataFrame()
             
             # Create DataFrame
@@ -204,31 +205,23 @@ class MLTradingAnalyzer:
             except Exception as e:
                 if attempt == max_retries - 1:
                     raise e
-                await asyncio.sleep(2 ** attempt)
+                await asyncio.sleep(2 ** (attempt + 1))
         return []
     
     def _validate_data_quality(self, df: pd.DataFrame) -> bool:
-        if df.empty or len(df) < 150:  # Reduce from 200
+        if df.empty or len(df) < 100:  # Reduce from 150
             return False
-    
-        # Be more lenient with crypto data
-        if df.isnull().sum().sum() > len(df) * 0.05:  # Allow 5% nulls
+        if df.isnull().sum().sum() > len(df) * 0.10:  # Increase null tolerance to 10%
             return False
-    
-        if (df['volume'] == 0).sum() > len(df) * 0.10:  # Allow 10% zero volume
+        if (df['volume'] == 0).sum() > len(df) * 0.20:  # Increase zero-volume tolerance to 20%
             return False
-        
-        # Check for extreme outliers
         price_cols = ['open', 'high', 'low', 'close']
         for col in price_cols:
             z_scores = np.abs(stats.zscore(df[col].fillna(df[col].median())))
-            if (z_scores > 5).sum() > len(df) * 0.01:  # More than 1% extreme outliers
+            if (z_scores > 5).sum() > len(df) * 0.02:  # Increase outlier tolerance to 2%
                 return False
-        
-        # Check for price consistency
         if (df['high'] < df['low']).any() or (df['high'] < df['close']).any():
             return False
-        
         return True
     
     def engineer_features(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -648,6 +641,7 @@ class MLTradingAnalyzer:
     def train_model(self, df: pd.DataFrame, symbol: str) -> Dict:
         """Train ML model with time series validation"""
         try:
+            logger.info(f"Starting model training for {symbol} with {len(df)} rows")
             # Engineer features
             df = self.engineer_features(df)
             
@@ -667,7 +661,7 @@ class MLTradingAnalyzer:
             y = y[mask]
             
             if len(X) < 50:
-                logger.warning(f"Insufficient data for {symbol}")
+                logger.warning(f"Insufficient data for {symbol}: {len(X)} rows after processing")
                 return {}
             
             # Time series split for validation
@@ -830,7 +824,7 @@ class MLTradingAnalyzer:
             
             # Quality gates
             if (model_confidence < self.min_model_confidence or
-                abs(prediction) < 0.005):  # Minimum 1% predicted move
+                abs(prediction) < 0.003):  # Minimum 1% predicted move
                 return None
             
             current_price = df['close'].iloc[-1]
