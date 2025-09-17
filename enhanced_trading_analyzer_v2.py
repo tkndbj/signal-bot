@@ -228,30 +228,50 @@ class MLTradingAnalyzer:
         """Advanced feature engineering with multiple domains"""
         if df.empty or len(df) < 50:
             return df
-        
+    
         try:
-            df = df.dropna().copy()
-            
+            initial_rows = len(df)
+            df = df.dropna().copy()  # Only clean initial data
+            logger.info(f"Feature engineering starting with {len(df)} clean rows")
+        
             # 1. Price-based features
             df = self._create_price_features(df)
-            
+        
             # 2. Volume features
             df = self._create_volume_features(df)
-            
+        
             # 3. Volatility features
             df = self._create_volatility_features(df)
-            
+        
             # 4. Technical indicators (diverse)
             df = self._create_technical_features(df)
-            
+        
             # 5. Momentum and trend features
             df = self._create_momentum_features(df)  
-            
+        
             # 6. Create target variable (future returns)
             df = self._create_target_variable(df)
-            
-            return df.dropna()
-            
+        
+            # CRITICAL FIX: Instead of dropna(), do selective cleaning
+            # Remove rows where target is NaN (essential)
+            df = df.dropna(subset=['target_return'])
+        
+            # For other columns, be more permissive
+            # Remove rows only if more than 50% of feature columns are NaN
+            feature_cols = [col for col in df.columns if not any(x in col.lower() for x in 
+                        ['open', 'high', 'low', 'close', 'volume', 'timestamp', 'target'])]
+        
+            if feature_cols:
+                # Calculate NaN percentage per row for feature columns only
+                nan_pct_per_row = df[feature_cols].isna().sum(axis=1) / len(feature_cols)
+                # Keep rows where less than 50% of features are NaN
+                df = df[nan_pct_per_row < 0.5]
+        
+            final_rows = len(df)
+            logger.info(f"Feature engineering completed: {final_rows} rows ({initial_rows - final_rows} removed)")
+        
+            return df
+        
         except Exception as e:
             logger.error(f"Error in feature engineering: {e}")
             return df
@@ -462,6 +482,9 @@ class MLTradingAnalyzer:
     
         # Remove only the last few rows that have NaN targets
         df = df[:-short_horizon]  # Remove last 6 rows instead of using dropna()
+
+        final_rows = len(df)
+        logger.info(f"Target creation: {initial_rows} -> {final_rows} rows ({initial_rows - final_rows} removed)")
     
         return df
     
@@ -860,7 +883,7 @@ class MLTradingAnalyzer:
             
             # Use selected features
             selected_features = self.feature_selectors[symbol]
-            X = df[selected_features].fillna(method='ffill').fillna(0).tail(1)
+            X = df[selected_features].ffill().fillna(0).tail(1)
             
             # Scale features
             scaler = self.scalers[symbol]
