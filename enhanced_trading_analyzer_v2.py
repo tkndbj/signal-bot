@@ -29,6 +29,9 @@ import shap
 from scipy import stats
 from scipy.linalg import qr
 import joblib
+
+# Define logger before using it
+logger = logging.getLogger(__name__)
 logger.info(f"Library versions - NumPy: {np.__version__}, SciPy: {scipy.__version__}, scikit-learn: {sklearn.__version__}, pandas: {pd.__version__}, numba: {numba.__version__}")
 warnings.filterwarnings('ignore')
 
@@ -200,7 +203,7 @@ class MLTradingAnalyzer:
             return pd.DataFrame()
     
     async def _fetch_with_retry(self, symbol: str, timeframe: str, 
-                              limit: 500, max_retries: int = 3) -> List:
+                            limit: int = 500, max_retries: int = 3) -> List:
         """Fetch data with retry logic"""
         for attempt in range(max_retries):
             try:
