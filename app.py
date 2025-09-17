@@ -220,7 +220,7 @@ class MLTradingBot:
                 return False
         
             # Check feature importance sum
-            feature_importance = signal_data.get('feature_importance', {})
+            feature_importance = signal_data.get('analysis_data', {}).get('feature_importance_top5', {})
             importance_sum = sum(feature_importance.values()) if feature_importance else 0
         
             if importance_sum < 0.6:
