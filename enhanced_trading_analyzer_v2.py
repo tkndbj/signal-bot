@@ -839,9 +839,8 @@ class MLTradingAnalyzer:
             if hasattr(final_model, 'feature_importances_'):
                 feature_importance = dict(zip(selected_features, final_model.feature_importances_))
             else:
-                feature_importance = {}
+                feature_importance = {}           
             
-            # Calculate SHAP values (for top 10 features only to save time)
             shap_importance = {}     
     
             # Store model artifacts
@@ -1077,6 +1076,8 @@ class MLTradingAnalyzer:
                             'take_profit': signal.take_profit,
                             'stop_loss': signal.stop_loss,
                             'confidence': signal.confidence,
+                            'ml_prediction': signal.ml_prediction,  # ADD THIS LINE
+                            'model_confidence': signal.model_confidence,
                             'analysis_data': {
                                 'ml_prediction': signal.analysis_summary['ml_prediction'],
                                 'model_confidence': signal.analysis_summary['model_confidence'],
