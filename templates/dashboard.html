@@ -1380,25 +1380,7 @@
         document.getElementById("feature-quality").textContent = `${(
           mlMetrics.feature_orthogonality * 100 || 0
         ).toFixed(1)}%`;
-
-        // Update model status panel
-        const globalStats = modelsData.global_stats || {};
-        document.getElementById("models-trained").textContent =
-          globalStats.total_models || 0;
-        document.getElementById("feature-count").textContent =
-          mlMetrics.avg_feature_count || 0;
-        document.getElementById("orthogonality-score").textContent = `${(
-          mlMetrics.feature_orthogonality * 100 || 0
-        ).toFixed(1)}%`;
-        document.getElementById("cv-score").textContent = (
-          globalStats.avg_accuracy || 0
-        ).toFixed(3);
-
-        if (globalStats.last_training_session) {
-          const date = new Date(globalStats.last_training_session);
-          document.getElementById("last-training").textContent =
-            date.toLocaleTimeString();
-        }
+        
       }
 
       function updateTopFeatures(models) {
