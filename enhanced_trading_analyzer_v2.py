@@ -449,123 +449,212 @@ class MLTradingAnalyzer:
             return 0.5
     
     def _create_target_variable(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Create target variable for ML models"""
-        # Future return prediction
-        df['target_return'] = df['close'].shift(-self.prediction_horizon).pct_change(self.prediction_horizon)
-        
-        # Binary classification targets
-        df['target_up'] = (df['target_return'] > 0.02).astype(int)  # 2% threshold
-        df['target_down'] = (df['target_return'] < -0.02).astype(int)
-        
-        # Multi-class target
-        conditions = [
-            df['target_return'] > 0.03,  # Strong up
-            df['target_return'] > 0.01,  # Weak up
-            df['target_return'] < -0.03,  # Strong down
-            df['target_return'] < -0.01   # Weak down
-        ]
-        choices = [3, 1, -3, -1]  # Strong up, weak up, strong down, weak down
-        df['target_class'] = np.select(conditions, choices, default=0)  # Neutral
-        
+        """Create target variable - use shorter horizon to preserve data"""
+        # Use much shorter horizon to preserve training data
+        short_horizon = 6  # 6 hours instead of 24
+    
+        # Simple future return
+        df['target_return'] = df['close'].shift(-short_horizon) / df['close'] - 1
+    
+        # Binary targets  
+        df['target_up'] = (df['target_return'] > 0.015).astype(int)  # 1.5% threshold
+        df['target_down'] = (df['target_return'] < -0.015).astype(int)
+    
+        # Remove only the last few rows that have NaN targets
+        df = df[:-short_horizon]  # Remove last 6 rows instead of using dropna()
+    
         return df
     
     def orthogonalize_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Apply Gram-Schmidt orthogonalization to correlated features"""
+        """Apply simplified orthogonalization with better error handling"""
         try:
-            # Identify feature columns (exclude price data and targets)
-            feature_cols = [col for col in df.columns if not any(x in col.lower() for x in 
-                        ['open', 'high', 'low', 'close', 'volume', 'timestamp', 'target'])]
+            # CRITICAL: Check input data first
+            if df.empty or len(df) < 50:
+                logger.warning(f"Input data too small for orthogonalization: {len(df)} rows")
+                return df
+            
+            logger.info(f"Starting orthogonalization with {len(df)} rows, {len(df.columns)} columns")
         
-            if len(feature_cols) < 2:
+            # Identify feature columns (be more permissive)
+            exclude_terms = ['timestamp', 'target']  # Reduced exclusions
+            feature_cols = []
+        
+            for col in df.columns:
+                # Only exclude if column name contains these exact patterns
+                if not any(term in col.lower() for term in exclude_terms):
+                    # Also exclude basic OHLCV unless they're derived features
+                    if col not in ['open', 'high', 'low', 'close', 'volume']:
+                        feature_cols.append(col)
+        
+            logger.info(f"Found {len(feature_cols)} potential feature columns")
+        
+            if len(feature_cols) < 5:  # Need minimum features
+                logger.warning("Too few features for orthogonalization, returning original data")
                 return df
         
-            # Get feature data with proper cleaning
+            # Get feature data with robust cleaning
             feature_data = df[feature_cols].copy()
         
-            # Clean data thoroughly
-            feature_data = feature_data.ffill().fillna(0)
+            # More aggressive data cleaning
+            initial_rows = len(feature_data)
         
-            # Remove infinite values
-            feature_data = feature_data.replace([np.inf, -np.inf], np.nan).fillna(0)
+            # Forward fill first, then backward fill, then zero fill
+            feature_data = feature_data.ffill().bfill().fillna(0)
         
-            # Check if we have enough valid data
-            if feature_data.empty or feature_data.shape[0] < 5:
-                logger.warning("Insufficient data for orthogonalization")
+            # Handle infinite values more carefully
+            feature_data = feature_data.replace([np.inf, -np.inf], np.nan)
+        
+            # For remaining NaNs, use column median
+            for col in feature_data.columns:
+                if feature_data[col].isna().any():
+                    median_val = feature_data[col].median()
+                    feature_data[col] = feature_data[col].fillna(median_val if pd.notna(median_val) else 0)
+        
+            # Check for remaining issues
+            if feature_data.isna().any().any():
+                logger.warning("Still have NaN values after cleaning, filling with 0")
+                feature_data = feature_data.fillna(0)
+            
+            if feature_data.empty or len(feature_data) < 20:
+                logger.warning(f"Data too small after cleaning: {len(feature_data)} rows")
                 return df
         
-            # Calculate correlation matrix
-            corr_matrix = feature_data.corr().abs()
+            logger.info(f"Data cleaned: {len(feature_data)} rows, {len(feature_data.columns)} features")
         
-            # Check for invalid correlations
-            if corr_matrix.isna().all().all():
-                logger.warning("All correlations are NaN, skipping orthogonalization")
+            # Skip correlation-based orthogonalization if we don't have enough data
+            if len(feature_data) < len(feature_data.columns) * 2:
+                logger.warning("Insufficient samples for correlation analysis, using PCA instead")
+                return self._apply_simple_pca(df, feature_data, feature_cols)
+        
+            # Calculate correlation matrix with error handling
+            try:
+                corr_matrix = feature_data.corr()
+            
+                # Check if correlation calculation succeeded
+                if corr_matrix.isna().all().all() or corr_matrix.empty:
+                    logger.warning("Correlation matrix calculation failed, returning original data")
+                    return df
+                
+            except Exception as e:
+                logger.warning(f"Correlation calculation failed: {e}, returning original data")
                 return df
         
-            # Find highly correlated feature groups
-            highly_correlated_groups = self._find_correlated_groups(corr_matrix, self.orthogonal_threshold)
+            # Find correlated groups with relaxed threshold
+            highly_correlated_groups = self._find_correlated_groups(corr_matrix, 0.9)  # Increased threshold
         
             if not highly_correlated_groups:
-                logger.info("No highly correlated groups found")
+                logger.info("No highly correlated groups found, keeping original features")
                 return df
         
-            # Apply orthogonalization to each group
-            orthogonal_features = feature_data.copy()
+            logger.info(f"Found {len(highly_correlated_groups)} correlated groups")
         
-            for group in highly_correlated_groups:
-                if len(group) > 1:
-                    try:
-                        # Get group data and ensure it's valid
-                        group_data = feature_data[group].values
-                    
-                        # Check for valid data
-                        if np.any(np.isnan(group_data)) or np.any(np.isinf(group_data)):
-                            logger.warning(f"Invalid data in group {group}, skipping")
-                            continue
-                    
-                        # Ensure we have enough samples
-                        if group_data.shape[0] < group_data.shape[1]:
-                            logger.warning(f"Insufficient samples for group {group}, skipping")
-                            continue
-                    
-                        # Apply QR decomposition
-                        q, r = qr(group_data, mode='economic')
-                    
-                        # Check dimensions
-                        if q.shape[1] != len(group):
-                            logger.warning(f"Dimension mismatch for group {group}, skipping")
-                            continue
-                    
-                        # Replace original features with orthogonal ones
-                        for i, feature in enumerate(group):
-                            if i < q.shape[1]:
-                                new_feature_name = f"{feature}_orth"
-                                orthogonal_features[new_feature_name] = q[:, i]
-                                # Drop original feature
-                                if feature in orthogonal_features.columns:
-                                    orthogonal_features = orthogonal_features.drop(feature, axis=1)
+            # Apply orthogonalization only to groups with sufficient data
+            orthogonal_features = feature_data.copy()
+            orthogonalized_count = 0
+        
+            for i, group in enumerate(highly_correlated_groups):
+                if len(group) < 2:
+                 continue
                 
-                    except Exception as e:
-                        logger.warning(f"Error orthogonalizing group {group}: {e}")
+                try:
+                    group_data = feature_data[group].values
+                
+                    # Ensure we have enough samples (at least 2x the number of features)
+                    if group_data.shape[0] < group_data.shape[1] * 2:
+                        logger.warning(f"Group {i} has insufficient samples ({group_data.shape[0]} vs {group_data.shape[1]}), skipping")
                         continue
+                
+                    # Check for valid data
+                    if np.any(np.isnan(group_data)) or np.any(np.isinf(group_data)):
+                        logger.warning(f"Group {i} has invalid data, skipping")
+                        continue
+                
+                    # Apply QR decomposition
+                    q, r = qr(group_data, mode='economic')
+                
+                    if q.shape[1] != len(group):
+                        logger.warning(f"QR decomposition dimension mismatch for group {i}, skipping")
+                        continue
+                
+                    # Replace with orthogonal features (keep original names with suffix)
+                    for j, feature in enumerate(group[:q.shape[1]]):  # Ensure we don't exceed dimensions
+                        new_name = f"{feature}_orth"
+                        orthogonal_features[new_name] = q[:, j]
+                        # Remove original
+                        if feature in orthogonal_features.columns:
+                            orthogonal_features = orthogonal_features.drop(feature, axis=1)
+                
+                    orthogonalized_count += 1
+                
+                except Exception as e:
+                    logger.warning(f"Error orthogonalizing group {i}: {e}, skipping group")
+                    continue
         
             # Update dataframe with orthogonal features
-            # Remove old feature columns first
-            df_clean = df.copy()
+            df_result = df.copy()
+        
+            # Remove old feature columns
             for col in feature_cols:
-                if col in df_clean.columns:
-                    df_clean = df_clean.drop(col, axis=1)
+                if col in df_result.columns:
+                    df_result = df_result.drop(col, axis=1)
         
             # Add orthogonal features
             for col in orthogonal_features.columns:
                 if col not in ['open', 'high', 'low', 'close', 'volume'] and 'target' not in col.lower():
-                    df_clean[col] = orthogonal_features[col]
+                    df_result[col] = orthogonal_features[col]
         
-            logger.info(f"Orthogonalized {len(highly_correlated_groups)} feature groups")
-            return df_clean
+            final_rows = len(df_result)
+            logger.info(f"Orthogonalized {orthogonalized_count} feature groups. "
+                    f"Final data: {final_rows} rows, {len(df_result.columns)} total columns")
+        
+            # CRITICAL: Ensure we didn't lose all our data
+            if final_rows == 0:
+                logger.error("Orthogonalization resulted in 0 rows! Returning original data")
+                return df
+            
+            return df_result
+
+        except Exception as e:
+            logger.error(f"Critical error in orthogonalization: {e}")
+            logger.info("Returning original dataframe due to orthogonalization failure")
+            return df
+
+    def _apply_simple_pca(self, df: pd.DataFrame, feature_data: pd.DataFrame, feature_cols: List[str]) -> pd.DataFrame:
+        """Apply simple PCA when correlation-based orthogonalization isn't feasible"""
+        try:
+            from sklearn.decomposition import PCA
+            from sklearn.preprocessing import StandardScaler
+        
+            # Scale features
+            scaler = StandardScaler()
+            scaled_data = scaler.fit_transform(feature_data)
+        
+            # Apply PCA to reduce to reasonable number of components
+            n_components = min(10, len(feature_cols), len(feature_data) - 1)
+            pca = PCA(n_components=n_components)
+            pca_features = pca.fit_transform(scaled_data)
+        
+            # Create PCA feature names
+            pca_df = pd.DataFrame(pca_features, 
+                                columns=[f'pca_{i}' for i in range(n_components)],
+                                index=feature_data.index)
+        
+            # Combine with original dataframe (removing original features)
+            df_result = df.copy()
+            for col in feature_cols:
+                if col in df_result.columns:
+                    df_result = df_result.drop(col, axis=1)
+        
+            # Add PCA features
+            for col in pca_df.columns:
+                df_result[col] = pca_df[col]
+        
+            logger.info(f"Applied PCA: reduced {len(feature_cols)} features to {n_components} components")
+            return df_result
         
         except Exception as e:
-            logger.error(f"Error in feature orthogonalization: {e}")
-            return df
+            logger.error(f"PCA fallback failed: {e}, returning original data")
+            return df        
     
     def _find_correlated_groups(self, corr_matrix: pd.DataFrame, threshold: float) -> List[List[str]]:
         """Find groups of highly correlated features"""
@@ -652,7 +741,7 @@ class MLTradingAnalyzer:
             df, selected_features = self.select_features(df)
             
             # Prepare data
-            X = df[selected_features].fillna(method='ffill').fillna(0)
+            X = df[selected_features].ffill().fillna(0)
             y = df['target_return'].fillna(0)
             
             # Remove infinite values
