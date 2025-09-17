@@ -208,11 +208,12 @@ class MLTradingAnalyzer:
         """Fetch data with retry logic"""
         for attempt in range(max_retries):
             try:
-                return await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+                # Use sync version of fetch_ohlcv since ccxt.async is not used
+                return self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
             except Exception as e:
                 if attempt == max_retries - 1:
                     raise e
-                await asyncio.sleep(2 ** (attempt + 1))
+                time.sleep(2 ** (attempt + 1))  # Use sync sleep
         return []
     
     def _validate_data_quality(self, df: pd.DataFrame) -> bool:
