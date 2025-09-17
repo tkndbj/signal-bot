@@ -6,7 +6,6 @@ import logging
 from typing import Dict, List, Tuple, Optional, Union
 import asyncio
 import json
-import os
 from dotenv import load_dotenv
 import talib
 from dataclasses import dataclass
@@ -14,6 +13,10 @@ from enum import Enum
 import time
 from concurrent.futures import ThreadPoolExecutor
 import warnings
+import os
+os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['MKL_NUM_THREADS'] = '1'
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
 
 # ML and feature engineering imports
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
@@ -226,10 +229,11 @@ class MLTradingAnalyzer:
     
     def engineer_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Advanced feature engineering with multiple domains"""
-        if df.empty or len(df) < 50:
-            return df
 
         initial_rows = len(df)
+
+        if df.empty or len(df) < 50:
+            return df        
     
         try:            
             df = df.dropna().copy()  # Only clean initial data
@@ -471,6 +475,8 @@ class MLTradingAnalyzer:
     
     def _create_target_variable(self, df: pd.DataFrame) -> pd.DataFrame:
         """Create target variable - use shorter horizon to preserve data"""
+        initial_rows = len(df)  # ADD THIS LINE
+    
         # Use much shorter horizon to preserve training data
         short_horizon = 6  # 6 hours instead of 24
     
@@ -722,7 +728,7 @@ class MLTradingAnalyzer:
                 return df, feature_cols[:self.feature_selection_k]
         
             # Method 1: Random Forest feature importance
-            rf = RandomForestRegressor(n_estimators=50, random_state=42, n_jobs=-1)
+            rf = RandomForestRegressor(n_estimators=50, random_state=42, n_jobs=1)
             rf.fit(X, y)
             rf_importance = rf.feature_importances_
         
@@ -782,7 +788,7 @@ class MLTradingAnalyzer:
             
             # Initialize models
             models = {
-                'rf': RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1),
+                'rf': RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=1),
                 'gbm': GradientBoostingRegressor(n_estimators=100, random_state=42)
             }
             

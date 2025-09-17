@@ -34,24 +34,33 @@ class MLEnhancedDatabase:
     def get_db_connection(self):
         """Context manager for database connections with ML optimizations"""
         conn = None
-        try:
-            conn = sqlite3.connect(self.db_path, timeout=30)
-            # Enable WAL mode for better concurrency
-            conn.execute('PRAGMA journal_mode=WAL')
-            conn.execute('PRAGMA synchronous=NORMAL')
-            conn.execute('PRAGMA foreign_keys=ON')
-            conn.execute('PRAGMA cache_size=10000')  # Increased cache for ML data
-            conn.row_factory = sqlite3.Row
-            yield conn
-            conn.commit()
-        except Exception as e:
-            if conn:
-                conn.rollback()
-            logger.error(f"Database error: {e}")
-            raise e
-        finally:
-            if conn:
-                conn.close()
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=30)
+                conn.execute('PRAGMA journal_mode=WAL')
+                conn.execute('PRAGMA synchronous=NORMAL')
+                conn.execute('PRAGMA foreign_keys=ON')
+                conn.execute('PRAGMA cache_size=10000')
+                conn.execute('PRAGMA busy_timeout=30000')  # 30 second timeout
+                conn.row_factory = sqlite3.Row
+                yield conn
+                conn.commit()
+                break
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    time.sleep(1)
+                    continue
+                else:
+                    raise e
+            except Exception as e:
+                if conn:
+                    conn.rollback()
+                logger.error(f"Database error: {e}")
+                raise e
+            finally:
+                if conn:
+                    conn.close()
 
     def row_to_dict(self, row):
         """Convert sqlite3.Row to dictionary safely"""
