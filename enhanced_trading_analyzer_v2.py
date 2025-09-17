@@ -842,11 +842,8 @@ class MLTradingAnalyzer:
                 feature_importance = {}
             
             # Calculate SHAP values (for top 10 features only to save time)
-            shap_importance = {}            
+            shap_importance = {}     
     
-            except Exception as e:
-                logger.warning(f"SHAP calculation failed for {symbol}: {e}")
-            
             # Store model artifacts
             self.models[symbol] = final_model
             self.scalers[symbol] = scaler
