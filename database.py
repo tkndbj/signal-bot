@@ -150,6 +150,45 @@ class MLEnhancedDatabase:
                 data_quality_score REAL
             )
             ''')
+
+            try:
+                cursor.execute("PRAGMA table_info(signals)")
+                existing_columns = [column[1] for column in cursor.fetchall()]
+            
+                if 'trailing_sl_active' not in existing_columns:
+                    cursor.execute('ALTER TABLE signals ADD COLUMN trailing_sl_active BOOLEAN DEFAULT FALSE')
+                    logger.info("Added trailing_sl_active column to signals table")
+            
+                if 'current_sl' not in existing_columns:
+                    cursor.execute('ALTER TABLE signals ADD COLUMN current_sl REAL')
+                    logger.info("Added current_sl column to signals table")
+            
+                if 'position_percentage' not in existing_columns:
+                    cursor.execute('ALTER TABLE signals ADD COLUMN position_percentage REAL DEFAULT 100')
+                    logger.info("Added position_percentage column to signals table")
+            
+                if 'partial_closure_count' not in existing_columns:
+                    cursor.execute('ALTER TABLE signals ADD COLUMN partial_closure_count INTEGER DEFAULT 0')
+                    logger.info("Added partial_closure_count column to signals table")
+                
+            except Exception as e:
+                logger.warning(f"Could not add new columns (may already exist): {e}")
+
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS partial_closures (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                signal_id TEXT NOT NULL,
+                closure_type TEXT NOT NULL CHECK (closure_type IN ('trailing_sl', 'partial_tp')),
+                closure_percentage REAL NOT NULL,
+                closure_price REAL NOT NULL,
+                pnl_usd REAL NOT NULL,
+                pnl_percentage REAL NOT NULL,
+                new_sl REAL,
+                remaining_position REAL DEFAULT 100,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (signal_id) REFERENCES signals (signal_id) ON DELETE CASCADE
+            )
+            ''')
             
             # ML Predictions tracking
             cursor.execute('''
