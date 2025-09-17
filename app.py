@@ -328,64 +328,35 @@ class MLTradingBot:
                 logger.debug(f"WebSocket error: {e}")
                 self.websocket_connections.discard(websocket)
 
-        @self.app.get("/api/partial-closures/{signal_id}")
-        async def get_partial_closures(signal_id: str):
-            """Get partial closure history for a signal"""
-            try:
-                with self.database.get_db_connection() as conn:
-                    cursor = conn.cursor()
-                    cursor.execute('''
-                        SELECT * FROM partial_closures 
-                        WHERE signal_id = ? 
-                        ORDER BY timestamp DESC
-                    ''', (signal_id,))
-            
-                    closures = []
-                    for row in cursor.fetchall():
-                        closures.append(dict(row))
-            
-                    return JSONResponse(content={"partial_closures": closures})
-            except Exception as e:
-                logger.error(f"Error getting partial closures: {e}")
-                return JSONResponse(content={"error": str(e)}, status_code=500)
-
         @self.app.get("/api/trades/history")
-        async def get_enhanced_trade_history():
-            """Get trade history including partial closures"""
+        async def get_trade_history():
+            """Get closed trades history"""
             try:
                 with self.database.get_db_connection() as conn:
                     cursor = conn.cursor()
-            
-                    # Get closed trades with partial closure info
                     cursor.execute('''
-                        SELECT s.*, 
-                            COUNT(pc.id) as partial_closure_count,
-                            SUM(pc.pnl_usd) as partial_pnl_total
-                        FROM signals s
-                        LEFT JOIN partial_closures pc ON s.signal_id = pc.signal_id
-                        WHERE s.status = 'closed'
-                        GROUP BY s.signal_id
-                        ORDER BY s.closed_at DESC
+                        SELECT * FROM signals 
+                        WHERE status = 'closed' 
+                        ORDER BY closed_at DESC 
                         LIMIT 50
                     ''')
             
                     trades = []
                     for row in cursor.fetchall():
                         trade = dict(row)
+                        # Calculate P&L
+                        if trade['direction'] == 'LONG':
+                            pnl_pct = ((trade['exit_price'] - trade['entry_price']) / trade['entry_price']) * 100 * 10
+                        else:
+                            pnl_pct = ((trade['entry_price'] - trade['exit_price']) / trade['entry_price']) * 100 * 10
                 
-                        # Get partial closures for this trade
-                        cursor.execute('''
-                            SELECT * FROM partial_closures 
-                            WHERE signal_id = ? 
-                            ORDER BY timestamp
-                        ''', (trade['signal_id'],))
-                
-                        trade['partial_closures'] = [dict(pc) for pc in cursor.fetchall()]
+                        trade['pnl_usd'] = (pnl_pct / 100) * 1000
+                        trade['pnl_percentage'] = pnl_pct
                         trades.append(trade)
             
                     return JSONResponse(content={"trades": trades})
             except Exception as e:
-                logger.error(f"Error getting enhanced trade history: {e}")
+                logger.error(f"Error getting trade history: {e}")
                 return JSONResponse(content={"error": str(e)}, status_code=500)
 
         @self.app.get("/api/signals")
@@ -1092,77 +1063,63 @@ class MLTradingBot:
             logger.error(f"Error updating ML performance metrics: {e}")
 
     async def check_signal_exits(self):
-        """Enhanced signal exit checking with ML insights and trailing stop loss"""
+        """Enhanced signal exit checking with ML insights"""
         try:
             active_signals = self.database.get_active_signals()
-        
+            
             for signal in active_signals:
                 if signal['signal_id'] in self.active_signals:
                     continue
-            
+                
                 try:
                     current_price = await self.analyzer.get_current_price(signal['coin'])
                     if current_price <= 0:
                         continue
-                
+                    
                     self.database.update_signal_price(signal['signal_id'], current_price)
-                
-                    # Get current stop loss (may have been modified by trailing)
-                    current_sl = signal.get('current_sl', signal['stop_loss'])
-                    position_pct = signal.get('position_percentage', 100)
-                
-                    # Calculate current P&L
-                    if signal['direction'] == 'LONG':
-                        pnl_pct = ((current_price - signal['entry_price']) / signal['entry_price']) * 100
-                    else:  # SHORT
-                        pnl_pct = ((signal['entry_price'] - current_price) / signal['entry_price']) * 100
-                
-                    # TRAILING STOP LOSS LOGIC
-                    await self.apply_trailing_stop_loss(signal, current_price, pnl_pct)
-                
-                    # Check exit conditions with updated SL
+                    
+                    # Check exit conditions
                     exit_reason = None
                     exit_price = None
                     buffer = 0.0015
-                
+                    
                     if signal['direction'] == 'LONG':
                         if current_price >= signal['take_profit'] * (1 - buffer):
                             exit_reason = "Take Profit Hit"
                             exit_price = signal['take_profit']
-                        elif current_price <= current_sl * (1 + buffer):  # Use current_sl
+                        elif current_price <= signal['stop_loss'] * (1 + buffer):
                             exit_reason = "Stop Loss Hit"
-                            exit_price = current_sl
+                            exit_price = signal['stop_loss']
                     else:  # SHORT
                         if current_price <= signal['take_profit'] * (1 + buffer):
                             exit_reason = "Take Profit Hit"
                             exit_price = signal['take_profit']
-                        elif current_price >= current_sl * (1 - buffer):  # Use current_sl
+                        elif current_price >= signal['stop_loss'] * (1 - buffer):
                             exit_reason = "Stop Loss Hit"
-                            exit_price = current_sl
-                
+                            exit_price = signal['stop_loss']
+                    
                     # Execute exit
                     if exit_reason and exit_price:
                         success = self.database.close_signal(signal['signal_id'], exit_price, exit_reason)
-                    
+                        
                         if success:
                             self.active_signals.discard(signal['signal_id'])
                             self.active_coins.discard(signal['coin'])
-                        
-                            # Calculate final P&L (considering partial closures)
+                            
+                            # Calculate P&L
                             if signal['direction'] == 'LONG':
-                                final_pnl_pct = ((exit_price - signal['entry_price']) / signal['entry_price']) * 100 * 10
+                                pnl_pct = ((exit_price - signal['entry_price']) / signal['entry_price']) * 100 * 10
                             else:
-                                final_pnl_pct = ((signal['entry_price'] - exit_price) / signal['entry_price']) * 100 * 10
-                        
-                            # Adjust for remaining position
-                            final_pnl_usd = (final_pnl_pct / 100) * 1000 * (position_pct / 100)
-                        
+                                pnl_pct = ((signal['entry_price'] - exit_price) / signal['entry_price']) * 100 * 10
+                            
+                            pnl_usd = (pnl_pct / 100) * 1000
+                            
                             # Update ML tracking
                             self.update_ml_prediction_accuracy(signal, exit_reason == "Take Profit Hit")
-                        
+                            
                             # Update metrics
                             self.performance_metrics['signals_closed'] += 1
-                        
+                            
                             # Broadcast signal closure
                             await self.broadcast_to_clients({
                                 "type": "ml_signal_closed",
@@ -1170,125 +1127,19 @@ class MLTradingBot:
                                 "coin": signal['coin'],
                                 "direction": signal['direction'],
                                 "exit_reason": exit_reason,
-                                "pnl_usd": round(final_pnl_usd, 2),
-                                "pnl_percentage": round(final_pnl_pct, 2),
+                                "pnl_usd": round(pnl_usd, 2),
+                                "pnl_percentage": round(pnl_pct, 2),
                                 "exit_price": exit_price,
-                                "remaining_position": position_pct,
                                 "ml_prediction_accuracy": self.model_performance.get(signal['coin'], {}).get('accuracy', 0)
                             })
-                        
-                            logger.info(f"ML Signal closed: {signal['coin']} {exit_reason} - P&L: ${final_pnl_usd:.2f} (Position: {position_pct}%)")
-            
+                            
+                            logger.info(f"ML Signal closed: {signal['coin']} {exit_reason} - P&L: ${pnl_usd:.2f}")
+                
                 except Exception as e:
                     logger.error(f"Error checking exit for ML signal {signal['signal_id']}: {e}")
-    
+        
         except Exception as e:
             logger.error(f"Error in ML signal exit check: {e}")
-
-    async def apply_trailing_stop_loss(self, signal: Dict, current_price: float, pnl_pct: float):
-        """Apply trailing stop loss and partial position management"""
-        try:
-            signal_id = signal['signal_id']
-            entry_price = signal['entry_price']
-            direction = signal['direction']
-            position_pct = signal.get('position_percentage', 100)
-        
-            # Skip if position already partially closed at 100% profit
-            if pnl_pct >= 100 and signal.get('partial_closure_count', 0) > 0:
-                return
-        
-            # 50% PROFIT - Move SL to breakeven
-            if pnl_pct >= 50 and not signal.get('trailing_sl_active', False):
-                new_sl = entry_price
-            
-                with self.database.get_db_connection() as conn:
-                    cursor = conn.cursor()
-                    cursor.execute('''
-                        UPDATE signals 
-                        SET current_sl = ?, trailing_sl_active = TRUE, 
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE signal_id = ? AND status = 'active'
-                    ''', (new_sl, signal_id))
-                
-                    # Log partial closure event
-                    cursor.execute('''
-                        INSERT INTO partial_closures (
-                            signal_id, closure_type, closure_percentage, 
-                            closure_price, pnl_usd, pnl_percentage, new_sl
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ''', (signal_id, 'trailing_sl', 0, current_price, 
-                        0, pnl_pct, new_sl))
-            
-                logger.info(f"Trailing SL activated for {signal['coin']}: SL moved to breakeven at {new_sl:.6f}")
-            
-                await self.broadcast_to_clients({
-                    "type": "trailing_sl_update",
-                    "signal_id": signal_id,
-                    "coin": signal['coin'],
-                    "message": "Stop Loss moved to breakeven (50% profit reached)",
-                    "new_sl": new_sl,
-                    "current_pnl_pct": round(pnl_pct, 2)
-                })
-        
-            # 100% PROFIT - Close 50% position and move SL to 50% profit
-            elif pnl_pct >= 100 and signal.get('partial_closure_count', 0) == 0:
-                # Calculate partial closure
-                partial_close_pct = 50  # Close 50% of position
-            
-                if direction == 'LONG':
-                    new_sl = entry_price * 1.5  # 50% profit level
-                    partial_pnl_pct = ((current_price - entry_price) / entry_price) * 100 * 10
-                else:  # SHORT
-                    new_sl = entry_price * 0.5  # 50% profit level for short
-                    partial_pnl_pct = ((entry_price - current_price) / entry_price) * 100 * 10
-            
-                partial_pnl_usd = (partial_pnl_pct / 100) * 1000 * (partial_close_pct / 100)
-            
-                with self.database.get_db_connection() as conn:
-                    cursor = conn.cursor()
-                
-                    # Update signal with new SL and reduced position
-                    cursor.execute('''
-                        UPDATE signals 
-                        SET current_sl = ?, position_percentage = ?, 
-                            partial_closure_count = partial_closure_count + 1,
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE signal_id = ? AND status = 'active'
-                    ''', (new_sl, position_pct - partial_close_pct, signal_id))
-                
-                    # Log partial closure
-                    cursor.execute('''
-                        INSERT INTO partial_closures (
-                            signal_id, closure_type, closure_percentage, 
-                            closure_price, pnl_usd, pnl_percentage, 
-                            new_sl, remaining_position
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (signal_id, 'partial_tp', partial_close_pct, current_price, 
-                        partial_pnl_usd, partial_pnl_pct, new_sl, 
-                        position_pct - partial_close_pct))
-                
-                    # Update portfolio with partial profit
-                    self.database._update_ml_portfolio_stats(conn, partial_pnl_usd, 
-                                                signal.get('ml_prediction_accuracy', 0), 
-                                                signal.get('model_confidence', 0))
-            
-                logger.info(f"Partial closure for {signal['coin']}: Closed {partial_close_pct}% at {current_price:.6f}, "
-                        f"P&L: ${partial_pnl_usd:.2f}, SL moved to {new_sl:.6f}")
-            
-                await self.broadcast_to_clients({
-                    "type": "partial_closure",
-                    "signal_id": signal_id,
-                    "coin": signal['coin'],
-                    "message": f"Closed {partial_close_pct}% of position (100% profit reached)",
-                    "closure_price": current_price,
-                    "partial_pnl_usd": round(partial_pnl_usd, 2),
-                    "new_sl": new_sl,
-                    "remaining_position": position_pct - partial_close_pct
-                })
-    
-        except Exception as e:
-            logger.error(f"Error applying trailing stop loss for {signal['signal_id']}: {e}")
-
 
     def update_ml_prediction_accuracy(self, signal: Dict, was_successful: bool):
         """Update ML prediction accuracy tracking"""
