@@ -19,7 +19,8 @@ os.environ['MKL_NUM_THREADS'] = '1'
 os.environ['OPENBLAS_NUM_THREADS'] = '1'
 
 # ML and feature engineering imports
-import sklearn  # Add this import
+import sklearn
+import numba  # Add this import
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.preprocessing import StandardScaler, RobustScaler
 from sklearn.decomposition import PCA
