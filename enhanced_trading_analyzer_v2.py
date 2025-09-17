@@ -481,46 +481,95 @@ class MLTradingAnalyzer:
         try:
             # Identify feature columns (exclude price data and targets)
             feature_cols = [col for col in df.columns if not any(x in col.lower() for x in 
-                          ['open', 'high', 'low', 'close', 'volume', 'timestamp', 'target'])]
-            
+                        ['open', 'high', 'low', 'close', 'volume', 'timestamp', 'target'])]
+        
             if len(feature_cols) < 2:
                 return df
-            
-            # Get feature data
-            feature_data = df[feature_cols].fillna(method='ffill').fillna(0)
-            
+        
+            # Get feature data with proper cleaning
+            feature_data = df[feature_cols].copy()
+        
+            # Clean data thoroughly
+            feature_data = feature_data.ffill().fillna(0)
+        
+            # Remove infinite values
+            feature_data = feature_data.replace([np.inf, -np.inf], np.nan).fillna(0)
+        
+            # Check if we have enough valid data
+            if feature_data.empty or feature_data.shape[0] < 5:
+                logger.warning("Insufficient data for orthogonalization")
+                return df
+        
             # Calculate correlation matrix
             corr_matrix = feature_data.corr().abs()
-            
+        
+            # Check for invalid correlations
+            if corr_matrix.isna().all().all():
+                logger.warning("All correlations are NaN, skipping orthogonalization")
+                return df
+        
             # Find highly correlated feature groups
             highly_correlated_groups = self._find_correlated_groups(corr_matrix, self.orthogonal_threshold)
-            
+        
+            if not highly_correlated_groups:
+                logger.info("No highly correlated groups found")
+                return df
+        
             # Apply orthogonalization to each group
             orthogonal_features = feature_data.copy()
-            
+        
             for group in highly_correlated_groups:
                 if len(group) > 1:
-                    group_data = feature_data[group].values
-                    # Apply QR decomposition
-                    q, r = qr(group_data.T, mode='economic')
-                    orthogonal_data = q.T
+                    try:
+                        # Get group data and ensure it's valid
+                        group_data = feature_data[group].values
                     
-                    # Replace original features with orthogonal ones
-                    for i, feature in enumerate(group):
-                        if i < orthogonal_data.shape[0]:
-                            orthogonal_features[f"{feature}_orth"] = orthogonal_data[i, :]
-                            orthogonal_features.drop(feature, axis=1, inplace=True)
-            
-            # Update dataframe
+                        # Check for valid data
+                        if np.any(np.isnan(group_data)) or np.any(np.isinf(group_data)):
+                            logger.warning(f"Invalid data in group {group}, skipping")
+                            continue
+                    
+                        # Ensure we have enough samples
+                        if group_data.shape[0] < group_data.shape[1]:
+                            logger.warning(f"Insufficient samples for group {group}, skipping")
+                            continue
+                    
+                        # Apply QR decomposition
+                        q, r = qr(group_data, mode='economic')
+                    
+                        # Check dimensions
+                        if q.shape[1] != len(group):
+                            logger.warning(f"Dimension mismatch for group {group}, skipping")
+                            continue
+                    
+                        # Replace original features with orthogonal ones
+                        for i, feature in enumerate(group):
+                            if i < q.shape[1]:
+                                new_feature_name = f"{feature}_orth"
+                                orthogonal_features[new_feature_name] = q[:, i]
+                                # Drop original feature
+                                if feature in orthogonal_features.columns:
+                                    orthogonal_features = orthogonal_features.drop(feature, axis=1)
+                
+                    except Exception as e:
+                        logger.warning(f"Error orthogonalizing group {group}: {e}")
+                        continue
+        
+            # Update dataframe with orthogonal features
+            # Remove old feature columns first
+            df_clean = df.copy()
+            for col in feature_cols:
+                if col in df_clean.columns:
+                    df_clean = df_clean.drop(col, axis=1)
+        
+            # Add orthogonal features
             for col in orthogonal_features.columns:
-                if col not in df.columns:
-                    df[col] = orthogonal_features[col]
-                elif col in feature_cols:
-                    df[col] = orthogonal_features[col]
-            
+                if col not in ['open', 'high', 'low', 'close', 'volume'] and 'target' not in col.lower():
+                    df_clean[col] = orthogonal_features[col]
+        
             logger.info(f"Orthogonalized {len(highly_correlated_groups)} feature groups")
-            return df
-            
+            return df_clean
+        
         except Exception as e:
             logger.error(f"Error in feature orthogonalization: {e}")
             return df
@@ -549,49 +598,49 @@ class MLTradingAnalyzer:
         try:
             # Get feature columns
             feature_cols = [col for col in df.columns if not any(x in col.lower() for x in 
-                          ['open', 'high', 'low', 'close', 'volume', 'timestamp', 'target'])]
-            
+                        ['open', 'high', 'low', 'close', 'volume', 'timestamp', 'target'])]
+        
             if len(feature_cols) < self.feature_selection_k:
                 return df, feature_cols
-            
-            # Prepare data
-            X = df[feature_cols].fillna(method='ffill').fillna(0)
+        
+            # Prepare data - FIX: Replace fillna(method='ffill')
+            X = df[feature_cols].ffill().fillna(0)
             y = df[target_col].fillna(0)
-            
+        
             # Remove rows with infinite values
             mask = np.isfinite(X).all(axis=1) & np.isfinite(y)
             X = X[mask]
             y = y[mask]
-            
+        
             if len(X) < 50:
                 return df, feature_cols[:self.feature_selection_k]
-            
+        
             # Method 1: Random Forest feature importance
             rf = RandomForestRegressor(n_estimators=50, random_state=42, n_jobs=-1)
             rf.fit(X, y)
             rf_importance = rf.feature_importances_
-            
+        
             # Method 2: Mutual information
             mi_scores = mutual_info_regression(X, y, random_state=42)
-            
+        
             # Method 3: Statistical correlation
             correlations = abs(X.corrwith(y))
-            
+        
             # Combine scores (normalized)
             rf_importance = rf_importance / rf_importance.sum()
             mi_scores = mi_scores / mi_scores.sum() if mi_scores.sum() > 0 else mi_scores
             correlations = correlations / correlations.sum() if correlations.sum() > 0 else correlations
-            
+        
             # Weighted combination
             combined_scores = (0.5 * rf_importance + 0.3 * mi_scores + 0.2 * correlations.values)
-            
+        
             # Select top features
             top_indices = np.argsort(combined_scores)[-self.feature_selection_k:]
             selected_features = [feature_cols[i] for i in top_indices]
-            
+        
             logger.info(f"Selected {len(selected_features)} features from {len(feature_cols)}")
             return df, selected_features
-            
+        
         except Exception as e:
             logger.error(f"Error in feature selection: {e}")
             return df, feature_cols[:self.feature_selection_k]
