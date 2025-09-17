@@ -337,7 +337,7 @@ class MLTradingBot:
                     cursor.execute('''
                         SELECT * FROM signals 
                         WHERE status = 'closed' 
-                        ORDER BY closed_time DESC 
+                        ORDER BY closed_at DESC 
                         LIMIT 50
                     ''')
             
