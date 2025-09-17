@@ -98,7 +98,7 @@ class MLTradingAnalyzer:
         self.max_signals_per_scan = 7
         
         # ML Model parameters
-        self.lookback_periods = 150  # For training
+        self.lookback_periods = 300  # For training
         self.min_data_points = 100
         self.prediction_horizon = 24  # Hours ahead to predict
         self.feature_selection_k = 15  # Top K features to keep
@@ -275,7 +275,7 @@ class MLTradingAnalyzer:
                 # Calculate NaN percentage per row for feature columns only
                 nan_pct_per_row = df[feature_cols].isna().sum(axis=1) / len(feature_cols)
                 # Keep rows where less than 50% of features are NaN
-                df = df[nan_pct_per_row < 0.5]
+                df = df[nan_pct_per_row < 0.7]
         
             final_rows = len(df)
             logger.info(f"Feature engineering completed: {final_rows} rows ({initial_rows - final_rows} removed)")

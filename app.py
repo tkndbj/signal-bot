@@ -193,42 +193,47 @@ class MLTradingBot:
             logger.error(f"Error initializing ML tracking: {e}")
 
     def validate_ml_signal_before_save(self, signal_data: Dict) -> bool:
-        """Enhanced ML signal validation"""
         try:
             # Standard validation
             if not self.validate_signal_before_save(signal_data):
                 return False
-            
+        
             # ML-specific validation
             ml_prediction = signal_data.get('ml_prediction', 0)
             model_confidence = signal_data.get('model_confidence', 0)
-            
-            # Check ML prediction strength
-            if abs(ml_prediction) < 0.01:  # Less than 1% predicted move
-                logger.warning(f"ML prediction too weak: {ml_prediction}")
+        
+            # Debug missing ml_prediction
+            if 'ml_prediction' not in signal_data or ml_prediction is None:
+                logger.error(f"Missing or invalid ml_prediction for {signal_data.get('coin', 'unknown')}")
                 return False
-            
+        
+            # Check ML prediction strength
+            entry_price = signal_data.get('entry_price', 1.0)
+            min_prediction_threshold = 0.01 if entry_price > 0.001 else 0.002
+            if abs(ml_prediction) < min_prediction_threshold:
+                logger.warning(f"ML prediction too weak: {ml_prediction} for {signal_data['coin']}")
+                return False
+        
             # Check model confidence
             if model_confidence < self.model_confidence_threshold:
                 logger.warning(f"Model confidence too low: {model_confidence}")
                 return False
-            
+        
             # Check feature importance sum
             feature_importance = signal_data.get('feature_importance', {})
             importance_sum = sum(feature_importance.values()) if feature_importance else 0
-            
-            if importance_sum < 0.6:  # Minimum feature importance threshold
+        
+            if importance_sum < 0.6:
                 logger.warning(f"Feature importance sum too low: {importance_sum}")
                 return False
-            
+        
             return True
-            
+        
         except Exception as e:
             logger.error(f"Error in ML signal validation: {e}")
             return False
 
     def validate_signal_before_save(self, signal_data: Dict) -> bool:
-        """Standard signal validation"""
         try:
             # Check required fields
             required_fields = ['signal_id', 'coin', 'direction', 'entry_price', 'take_profit', 'stop_loss']
@@ -236,13 +241,19 @@ class MLTradingBot:
                 if field not in signal_data:
                     logger.error(f"Missing required field: {field}")
                     return False
-        
+    
             # Check price logic
-            entry = signal_data['entry_price']
-            tp = signal_data['take_profit']
-            sl = signal_data['stop_loss']
+            entry = round(signal_data['entry_price'], 8)
+            tp = round(signal_data['take_profit'], 8)
+            sl = round(signal_data['stop_loss'], 8)
             direction = signal_data['direction']
-        
+    
+            # Ensure minimum price difference
+            min_price_diff = entry * 0.001
+            if abs(entry - sl) < min_price_diff or abs(tp - entry) < min_price_diff:
+                logger.error(f"Price difference too small: SL={sl}, Entry={entry}, TP={tp}")
+                return False
+    
             if direction == 'LONG':
                 if not (sl < entry < tp):
                     logger.error(f"Invalid LONG signal prices: SL={sl}, Entry={entry}, TP={tp}")
@@ -251,17 +262,17 @@ class MLTradingBot:
                 if not (tp < entry < sl):
                     logger.error(f"Invalid SHORT signal prices: TP={tp}, Entry={entry}, SL={sl}")
                     return False
-        
+    
             # Check if coin already active
             active_signals = self.database.get_active_signals()
             active_coins = {signal['coin'] for signal in active_signals}
-        
+    
             if signal_data['coin'] in active_coins:
                 logger.warning(f"Coin {signal_data['coin']} already has active signal")
                 return False
-        
+    
             return True
-        
+    
         except Exception as e:
             logger.error(f"Error validating signal: {e}")
             return False
