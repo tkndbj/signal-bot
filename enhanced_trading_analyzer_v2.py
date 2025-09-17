@@ -27,11 +27,13 @@ from sklearn.decomposition import PCA
 from sklearn.feature_selection import SelectKBest, f_regression, mutual_info_regression
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_squared_error, mean_absolute_error
-import shap
 import scipy
 from scipy import stats
 from scipy.linalg import qr
 import joblib
+import shap
+explainer = shap.TreeExplainer(model, feature_perturbation='interventional', check_additivity=False)
+shap_values = explainer.shap_values(X)
 
 # Define logger before using it
 logger = logging.getLogger(__name__)
