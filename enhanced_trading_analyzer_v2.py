@@ -19,6 +19,7 @@ os.environ['MKL_NUM_THREADS'] = '1'
 os.environ['OPENBLAS_NUM_THREADS'] = '1'
 
 # ML and feature engineering imports
+import sklearn  # Add this import
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.preprocessing import StandardScaler, RobustScaler
 from sklearn.decomposition import PCA
@@ -26,7 +27,7 @@ from sklearn.feature_selection import SelectKBest, f_regression, mutual_info_reg
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 import shap
-import scipy  # Add this import
+import scipy
 from scipy import stats
 from scipy.linalg import qr
 import joblib
