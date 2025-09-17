@@ -624,7 +624,7 @@ class MLTradingAnalyzer:
             X = X[mask]
             y = y[mask]
             
-            if len(X) < 100:
+            if len(X) < 50:
                 logger.warning(f"Insufficient data for {symbol}")
                 return {}
             
