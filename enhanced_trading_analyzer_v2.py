@@ -850,7 +850,7 @@ class MLTradingAnalyzer:
                 X_sample = X_scaled[top_feature_names].tail(50)  # Reduce sample size from 100 to 50
     
                 # Use TreeExplainer with additivity check disabled
-                explainer = shap.TreeExplainer(final_model, check_additivity=False)
+                explainer = shap.TreeExplainer(final_model)
                 shap_values = explainer.shap_values(X_sample)
     
                 # Handle different SHAP output formats
