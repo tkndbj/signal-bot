@@ -32,8 +32,6 @@ from scipy import stats
 from scipy.linalg import qr
 import joblib
 import shap
-explainer = shap.TreeExplainer(model, feature_perturbation='interventional', check_additivity=False)
-shap_values = explainer.shap_values(X)
 
 # Define logger before using it
 logger = logging.getLogger(__name__)
