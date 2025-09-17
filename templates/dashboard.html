@@ -1580,63 +1580,161 @@
       }
 
       async function showChart(coin, signalId) {
-        const modal = document.getElementById("chart-modal");
-        modal.style.display = "block";
-        document.getElementById(
-          "modal-title"
-        ).textContent = `${coin} ML ANALYSIS`;
+    const modal = document.getElementById("chart-modal");
+    modal.style.display = "block";
+    document.getElementById("modal-title").textContent = `${coin} ML ANALYSIS`;
 
-        const signal = currentSignals.find((s) => s.signal_id === signalId);
-        if (signal) {
-          // Technical indicators tab
-          document.getElementById("indicators-data").innerHTML = `
-                    RSI: ${signal.indicators?.rsi || "N/A"}<br>
-                    MACD: ${signal.indicators?.macd?.toFixed(6) || "N/A"}<br>
-                    Volume Ratio: ${
-                      signal.indicators?.volume_ratio || "N/A"
-                    }<br>
-                    ATR %: ${signal.indicators?.atr_percentage || "N/A"}%
-                `;
+    // Initialize the chart
+    const chartContainer = document.getElementById("chart-container");
+    
+    // Clear previous chart if exists
+    chartContainer.innerHTML = '';
+    
+    // Create the chart
+    const chart = LightweightCharts.createChart(chartContainer, {
+        width: chartContainer.clientWidth,
+        height: chartContainer.clientHeight,
+        layout: {
+            background: { color: '#0a0a0a' },
+            textColor: '#ffffff',
+        },
+        grid: {
+            vertLines: { color: '#2a2a2a' },
+            horzLines: { color: '#2a2a2a' },
+        },
+        crosshair: {
+            mode: LightweightCharts.CrosshairMode.Normal,
+        },
+        rightPriceScale: {
+            borderColor: '#2a2a2a',
+        },
+        timeScale: {
+            borderColor: '#2a2a2a',
+            timeVisible: true,
+            secondsVisible: false,
+        },
+    });
 
-          // ML analysis tab
-          document.getElementById("ml-analysis").innerHTML = `
-                    <strong>ML Prediction:</strong> ${(
-                      signal.ml_prediction * 100 || 0
-                    ).toFixed(2)}%<br>
-                    <strong>Model Confidence:</strong> ${(
-                      signal.model_confidence * 100 || 0
-                    ).toFixed(1)}%<br>
-                    <strong>Model Type:</strong> ${
-                      signal.analysis_data?.model_type || "Unknown"
-                    }<br>
-                    <strong>Direction:</strong> ${signal.direction}<br>
-                    <strong>Risk/Reward:</strong> ${
-                      signal.analysis_data?.risk_reward_ratio || "N/A"
-                    }<br><br>
-                    <strong>ML Factors:</strong><br>
-                    ${(signal.confluence_factors || [])
-                      .map((f) => `• ${f}`)
-                      .join("<br>")}
-                `;
+    // Add candlestick series
+    const candlestickSeries = chart.addCandlestickSeries({
+        upColor: '#00ff88',
+        downColor: '#ff3366',
+        borderUpColor: '#00ff88',
+        borderDownColor: '#ff3366',
+        wickUpColor: '#00ff88',
+        wickDownColor: '#ff3366',
+    });
 
-          // Feature importance tab
-          const features =
-            signal.feature_importance_top3 || signal.feature_importance || {};
-          document.getElementById("feature-importance").innerHTML =
-            Object.keys(features).length > 0
-              ? Object.entries(features)
-                  .sort(([, a], [, b]) => b - a)
-                  .map(
-                    ([feature, importance]) =>
-                      `<div class="feature-tag">${feature.replace(
-                        /_/g,
-                        " "
-                      )}: ${(importance * 100).toFixed(1)}%</div>`
-                  )
-                  .join("")
-              : "No feature importance data available";
+    // Find the signal data
+    const signal = currentSignals.find((s) => s.signal_id === signalId);
+    
+    if (signal) {
+        // Fetch actual price data for the chart
+        try {
+            const response = await fetch(`https://api.binance.com/api/v3/klines?symbol=${coin}USDT&interval=1h&limit=100`);
+            const data = await response.json();
+            
+            const chartData = data.map(candle => ({
+                time: candle[0] / 1000,
+                open: parseFloat(candle[1]),
+                high: parseFloat(candle[2]),
+                low: parseFloat(candle[3]),
+                close: parseFloat(candle[4])
+            }));
+            
+            candlestickSeries.setData(chartData);
+            
+            // Add entry price line
+            const entryPriceLine = {
+                price: signal.entry_price,
+                color: '#00aaff',
+                lineWidth: 2,
+                lineStyle: LightweightCharts.LineStyle.Dashed,
+                axisLabelVisible: true,
+                title: 'Entry',
+            };
+            
+            // Add take profit line
+            const takeProfitLine = {
+                price: signal.take_profit,
+                color: '#00ff88',
+                lineWidth: 2,
+                lineStyle: LightweightCharts.LineStyle.Solid,
+                axisLabelVisible: true,
+                title: 'TP',
+            };
+            
+            // Add stop loss line
+            const stopLossLine = {
+                price: signal.stop_loss,
+                color: '#ff3366',
+                lineWidth: 2,
+                lineStyle: LightweightCharts.LineStyle.Solid,
+                axisLabelVisible: true,
+                title: 'SL',
+            };
+            
+            candlestickSeries.createPriceLine(entryPriceLine);
+            candlestickSeries.createPriceLine(takeProfitLine);
+            candlestickSeries.createPriceLine(stopLossLine);
+            
+            // Add current price marker if available
+            if (signal.current_price) {
+                candlestickSeries.createPriceLine({
+                    price: signal.current_price,
+                    color: '#ffaa00',
+                    lineWidth: 1,
+                    lineStyle: LightweightCharts.LineStyle.Dotted,
+                    axisLabelVisible: true,
+                    title: 'Current',
+                });
+            }
+            
+            // Fit content
+            chart.timeScale().fitContent();
+            
+            // Handle resize
+            window.addEventListener('resize', () => {
+                chart.applyOptions({ 
+                    width: chartContainer.clientWidth,
+                    height: chartContainer.clientHeight 
+                });
+            });
+            
+        } catch (error) {
+            console.error('Error fetching chart data:', error);
+            chartContainer.innerHTML = '<div style="color: #ff3366; padding: 20px; text-align: center;">Error loading chart data</div>';
         }
-      }
+
+        // Update the tab content (this part stays the same)
+        document.getElementById("indicators-data").innerHTML = `
+            RSI: ${signal.indicators?.rsi || "N/A"}<br>
+            MACD: ${signal.indicators?.macd?.toFixed(6) || "N/A"}<br>
+            Volume Ratio: ${signal.indicators?.volume_ratio || "N/A"}<br>
+            ATR %: ${signal.indicators?.atr_percentage || "N/A"}%
+        `;
+
+        document.getElementById("ml-analysis").innerHTML = `
+            <strong>ML Prediction:</strong> ${(signal.ml_prediction * 100 || 0).toFixed(2)}%<br>
+            <strong>Model Confidence:</strong> ${(signal.model_confidence * 100 || 0).toFixed(1)}%<br>
+            <strong>Model Type:</strong> ${signal.analysis_data?.model_type || "Unknown"}<br>
+            <strong>Direction:</strong> ${signal.direction}<br>
+            <strong>Risk/Reward:</strong> ${signal.analysis_data?.risk_reward_ratio || "N/A"}<br><br>
+            <strong>ML Factors:</strong><br>
+            ${(signal.confluence_factors || []).map((f) => `• ${f}`).join("<br>")}
+        `;
+
+        const features = signal.feature_importance_top3 || signal.feature_importance || {};
+        document.getElementById("feature-importance").innerHTML =
+            Object.keys(features).length > 0
+                ? Object.entries(features)
+                    .sort(([, a], [, b]) => b - a)
+                    .map(([feature, importance]) =>
+                        `<div class="feature-tag">${feature.replace(/_/g, " ")}: ${(importance * 100).toFixed(1)}%</div>`
+                    ).join("")
+                : "No feature importance data available";
+    }
+}
 
       function showTab(tabName) {
         // Hide all tabs
@@ -1659,8 +1757,10 @@
       }
 
       function closeModal() {
-        document.getElementById("chart-modal").style.display = "none";
-      }
+    const chartContainer = document.getElementById("chart-container");
+    chartContainer.innerHTML = ''; // Clear chart when closing
+    document.getElementById("chart-modal").style.display = "none";
+}
 
       async function triggerRetraining() {
         try {
