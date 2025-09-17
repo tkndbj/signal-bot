@@ -148,7 +148,7 @@ class MLTradingAnalyzer:
             })
     
     async def get_market_data(self, symbol: str, timeframe: str = '1h', 
-                            limit: int = 200) -> pd.DataFrame:
+                            limit: int = 300) -> pd.DataFrame:
         """Enhanced market data fetching with extended history"""
         cache_key = f"{symbol}_{timeframe}_{limit}"
         current_time = time.time()
@@ -168,9 +168,9 @@ class MLTradingAnalyzer:
             self.request_delays[symbol] = current_time
             
             # Fetch with retry logic
-            ohlcv = await self._fetch_with_retry(symbol, timeframe, limit)
+            ohlcv = await self._fetch_with_retry(symbol, timeframe, limit=self.lookback_periods)
             logger.info(f"Fetched {len(ohlcv)} rows for {symbol}")
-            if not ohlcv or len(ohlcv) < 200:
+            if not ohlcv or len(ohlcv) < self.lookback_periods:
                 logger.warning(f"Insufficient rows for {symbol}: {len(ohlcv)}")
                 return pd.DataFrame()
             
@@ -1017,7 +1017,9 @@ class MLTradingAnalyzer:
                 self.scalers = model_data.get('scalers', {})
                 self.feature_selectors = model_data.get('feature_selectors', {})
                 self.feature_importance_history = model_data.get('feature_importance_history', {})
-                logger.info(f"Models loaded from {filepath}")
+                logger.info(f"Loaded {len(self.models)} models from {filepath}")
+            else:
+                logger.warning(f"Model file {filepath} not found")
         except Exception as e:
             logger.error(f"Error loading models: {e}")
     
