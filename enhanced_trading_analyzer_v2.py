@@ -26,6 +26,7 @@ from sklearn.feature_selection import SelectKBest, f_regression, mutual_info_reg
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 import shap
+import scipy  # Add this import
 from scipy import stats
 from scipy.linalg import qr
 import joblib
@@ -34,8 +35,6 @@ import joblib
 logger = logging.getLogger(__name__)
 logger.info(f"Library versions - NumPy: {np.__version__}, SciPy: {scipy.__version__}, scikit-learn: {sklearn.__version__}, pandas: {pd.__version__}, numba: {numba.__version__}")
 warnings.filterwarnings('ignore')
-
-logger = logging.getLogger(__name__)
 
 class MarketRegime(Enum):
     TRENDING_UP = "trending_up"
