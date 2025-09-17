@@ -328,6 +328,37 @@ class MLTradingBot:
                 logger.debug(f"WebSocket error: {e}")
                 self.websocket_connections.discard(websocket)
 
+        @self.app.get("/api/trades/history")
+        async def get_trade_history():
+            """Get closed trades history"""
+            try:
+                with self.database.get_db_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        SELECT * FROM signals 
+                        WHERE status = 'closed' 
+                        ORDER BY exit_time DESC 
+                        LIMIT 50
+                    ''')
+            
+                    trades = []
+                    for row in cursor.fetchall():
+                        trade = dict(row)
+                        # Calculate P&L
+                        if trade['direction'] == 'LONG':
+                            pnl_pct = ((trade['exit_price'] - trade['entry_price']) / trade['entry_price']) * 100 * 10
+                        else:
+                            pnl_pct = ((trade['entry_price'] - trade['exit_price']) / trade['entry_price']) * 100 * 10
+                
+                        trade['pnl_usd'] = (pnl_pct / 100) * 1000
+                        trade['pnl_percentage'] = pnl_pct
+                        trades.append(trade)
+            
+                    return JSONResponse(content={"trades": trades})
+            except Exception as e:
+                logger.error(f"Error getting trade history: {e}")
+                return JSONResponse(content={"error": str(e)}, status_code=500)
+
         @self.app.get("/api/signals")
         async def get_ml_signals():
             """Get active ML signals with enhanced data"""

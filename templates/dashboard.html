@@ -913,60 +913,30 @@
 
       <!-- Right Panel - Analysis -->
       <div class="panel">
-        <div class="panel-header ml-header">
-          <span>🔬 ML MODEL STATUS</span>
-        </div>
-        <div class="model-status">
-          <div class="model-metric">
-            <span class="label">Models Trained:</span>
-            <span class="value" id="models-trained">0</span>
-          </div>
-          <div class="model-metric">
-            <span class="label">Last Training:</span>
-            <span class="value" id="last-training">Never</span>
-          </div>
-          <div class="model-metric">
-            <span class="label">Features Used:</span>
-            <span class="value" id="feature-count">0</span>
-          </div>
-          <div class="model-metric">
-            <span class="label">Orthogonality:</span>
-            <span class="value" id="orthogonality-score">0%</span>
-          </div>
-          <div class="model-metric">
-            <span class="label">CV Score:</span>
-            <span class="value" id="cv-score">0.000</span>
-          </div>
-        </div>
-
         <div class="panel-header">
-          <span>🔍 TOP FEATURES</span>
+            <span>📊 TRADE HISTORY</span>
         </div>
-        <div id="top-features" style="padding: 15px">
-          <div style="color: var(--text-secondary); font-size: 11px">
-            No feature data available
-          </div>
+        <div style="padding: 15px; height: calc(100% - 45px); overflow-y: auto;">
+            <table style="width: 100%; font-size: 11px;">
+                <thead>
+                    <tr style="border-bottom: 2px solid var(--border-color);">
+                        <th style="text-align: left; padding: 8px 4px; color: var(--text-secondary);">COIN</th>
+                        <th style="text-align: left; padding: 8px 4px; color: var(--text-secondary);">DIR</th>
+                        <th style="text-align: right; padding: 8px 4px; color: var(--text-secondary);">ENTRY</th>
+                        <th style="text-align: right; padding: 8px 4px; color: var(--text-secondary);">EXIT</th>
+                        <th style="text-align: right; padding: 8px 4px; color: var(--text-secondary);">P&L</th>
+                        <th style="text-align: left; padding: 8px 4px; color: var(--text-secondary);">REASON</th>
+                    </tr>
+                </thead>
+                <tbody id="trade-history-tbody">
+                    <tr>
+                        <td colspan="6" style="text-align: center; padding: 20px; color: var(--text-secondary);">
+                            No trade history available
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
         </div>
-
-        <div class="panel-header">
-          <span>💹 MONITORED PAIRS</span>
-        </div>
-        <div
-          id="trading-pairs"
-          style="padding: 15px; max-height: 200px; overflow-y: auto"
-        >
-          <!-- Pairs will be listed here -->
-        </div>
-
-        <div class="panel-header">
-          <span>🔔 RECENT ALERTS</span>
-        </div>
-        <div id="recent-alerts" style="padding: 15px">
-          <div style="color: var(--text-secondary); font-size: 11px">
-            No recent alerts
-          </div>
-        </div>
-      </div>
     </div>
 
     <!-- Chart Modal -->
@@ -1166,6 +1136,50 @@
         }
       }
 
+      async function loadTradeHistory() {
+    try {
+        const response = await fetch('/api/trades/history');
+        const data = await response.json();
+        
+        const tbody = document.getElementById('trade-history-tbody');
+        
+        if (!data.trades || data.trades.length === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="6" style="text-align: center; padding: 20px; color: var(--text-secondary);">
+                        No trade history available
+                    </td>
+                </tr>
+            `;
+            return;
+        }
+        
+        tbody.innerHTML = data.trades.map(trade => {
+            const pnlClass = trade.pnl_usd >= 0 ? 'positive' : 'negative';
+            const dirClass = trade.direction === 'LONG' ? 'positive' : 'negative';
+            
+            return `
+                <tr style="border-bottom: 1px solid rgba(42, 42, 42, 0.3);">
+                    <td style="padding: 8px 4px; font-weight: 600; color: var(--accent-purple);">${trade.coin}</td>
+                    <td style="padding: 8px 4px;">
+                        <span class="${dirClass}" style="font-size: 10px; font-weight: 600;">${trade.direction}</span>
+                    </td>
+                    <td style="padding: 8px 4px; text-align: right;">${trade.entry_price.toFixed(4)}</td>
+                    <td style="padding: 8px 4px; text-align: right;">${trade.exit_price.toFixed(4)}</td>
+                    <td style="padding: 8px 4px; text-align: right;" class="${pnlClass}">
+                        <div style="font-weight: 600;">$${trade.pnl_usd.toFixed(2)}</div>
+                        <div style="font-size: 9px;">${trade.pnl_percentage.toFixed(1)}%</div>
+                    </td>
+                    <td style="padding: 8px 4px; font-size: 10px; color: var(--text-secondary);">${trade.exit_reason}</td>
+                </tr>
+            `;
+        }).join('');
+        
+    } catch (error) {
+        console.error('Failed to load trade history:', error);
+    }
+}
+
       function addLogFromBackend(logData) {
         const logEntry = document.createElement("div");
         logEntry.className = "log-entry fade-in";
@@ -1316,44 +1330,44 @@
       }
 
       async function refreshData() {
-        try {
-          const [
+    try {
+        const [
             signalsResp,
             portfolioResp,
             systemResp,
             alertsResp,
             modelsResp,
-          ] = await Promise.all([
+        ] = await Promise.all([
             fetch("/api/signals"),
             fetch("/api/portfolio"),
             fetch("/api/system").catch(() => ({ ok: false })),
             fetch("/api/alerts"),
             fetch("/api/ml/models").catch(() => ({
-              ok: false,
-              json: () => ({}),
+                ok: false,
+                json: () => ({}),
             })),
-          ]);
+        ]);
 
-          const signalsData = await signalsResp.json();
-          const portfolioData = await portfolioResp.json();
-          const systemData = systemResp.ok ? await systemResp.json() : null;
-          const alertsData = await alertsResp.json();
-          const modelsData = modelsResp.ok ? await modelsResp.json() : {};
+        const signalsData = await signalsResp.json();
+        const portfolioData = await portfolioResp.json();
+        const systemData = systemResp.ok ? await systemResp.json() : null;
+        const alertsData = await alertsResp.json();
+        const modelsData = modelsResp.ok ? await modelsResp.json() : {};
 
-          updateSignalsDisplay(signalsData.signals || []);
-          updatePortfolioStats(portfolioData.portfolio || {});
-          updateMLStats(signalsData.ml_metrics || {}, modelsData);
-          updateRecentAlerts(alertsData.alerts || []);
-          updateTopFeatures(modelsData.models || {});
-
-          if (systemData) {
+        updateSignalsDisplay(signalsData.signals || []);
+        updatePortfolioStats(portfolioData.portfolio || {});
+        updateMLStats(signalsData.ml_metrics || {}, modelsData);       
+        
+        await loadTradeHistory(); // Add this here
+        
+        if (systemData) {
             updateSystemStats(systemData);
-          }
-        } catch (error) {
-          console.error("Error refreshing data:", error);
-          addLog("ERROR", "SYSTEM", "Failed to refresh data");
         }
-      }
+    } catch (error) {
+        console.error("Error refreshing data:", error);
+        addLog("ERROR", "SYSTEM", "Failed to refresh data");
+    }
+}
 
       function updateMLStats(mlMetrics, modelsData) {
         // Update ML performance cards
