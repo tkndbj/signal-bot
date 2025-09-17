@@ -91,7 +91,8 @@ class MLTradingAnalyzer:
         self.max_signals_per_scan = 7
         
         # ML Model parameters
-        self.lookback_periods = 500  # For training
+        self.lookback_periods = 200  # For training
+        self.min_data_points = 150
         self.prediction_horizon = 24  # Hours ahead to predict
         self.feature_selection_k = 15  # Top K features to keep
         self.cv_folds = 5  # Time series CV folds
@@ -147,7 +148,7 @@ class MLTradingAnalyzer:
             })
     
     async def get_market_data(self, symbol: str, timeframe: str = '1h', 
-                            limit: int = 500) -> pd.DataFrame:
+                            limit: int = 200) -> pd.DataFrame:
         """Enhanced market data fetching with extended history"""
         cache_key = f"{symbol}_{timeframe}_{limit}"
         current_time = time.time()
@@ -207,16 +208,14 @@ class MLTradingAnalyzer:
         return []
     
     def _validate_data_quality(self, df: pd.DataFrame) -> bool:
-        """Enhanced data quality validation"""
-        if df.empty or len(df) < 200:
+        if df.empty or len(df) < 150:  # Reduce from 200
             return False
-        
-        # Check for null values
-        if df.isnull().sum().sum() > len(df) * 0.02:
+    
+        # Be more lenient with crypto data
+        if df.isnull().sum().sum() > len(df) * 0.05:  # Allow 5% nulls
             return False
-        
-        # Check for zero volume
-        if (df['volume'] == 0).sum() > len(df) * 0.05:
+    
+        if (df['volume'] == 0).sum() > len(df) * 0.10:  # Allow 10% zero volume
             return False
         
         # Check for extreme outliers
@@ -234,7 +233,7 @@ class MLTradingAnalyzer:
     
     def engineer_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Advanced feature engineering with multiple domains"""
-        if df.empty or len(df) < 100:
+        if df.empty or len(df) < 50:
             return df
         
         try:
@@ -252,16 +251,10 @@ class MLTradingAnalyzer:
             # 4. Technical indicators (diverse)
             df = self._create_technical_features(df)
             
-            # 5. Market microstructure
-            df = self._create_microstructure_features(df)
+            # 5. Momentum and trend features
+            df = self._create_momentum_features(df)  
             
-            # 6. Momentum and trend features
-            df = self._create_momentum_features(df)
-            
-            # 7. Statistical features
-            df = self._create_statistical_features(df)
-            
-            # 8. Create target variable (future returns)
+            # 6. Create target variable (future returns)
             df = self._create_target_variable(df)
             
             return df.dropna()
