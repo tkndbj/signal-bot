@@ -29,7 +29,7 @@ import shap
 from scipy import stats
 from scipy.linalg import qr
 import joblib
-
+logger.info(f"Library versions - NumPy: {np.__version__}, SciPy: {scipy.__version__}, scikit-learn: {sklearn.__version__}, pandas: {pd.__version__}, numba: {numba.__version__}")
 warnings.filterwarnings('ignore')
 
 logger = logging.getLogger(__name__)
@@ -151,7 +151,7 @@ class MLTradingAnalyzer:
             })
     
     async def get_market_data(self, symbol: str, timeframe: str = '1h', 
-                            limit: int = 300) -> pd.DataFrame:
+                            limit: int = 500) -> pd.DataFrame:
         """Enhanced market data fetching with extended history"""
         cache_key = f"{symbol}_{timeframe}_{limit}"
         current_time = time.time()
@@ -171,9 +171,9 @@ class MLTradingAnalyzer:
             self.request_delays[symbol] = current_time
             
             # Fetch with retry logic
-            ohlcv = await self._fetch_with_retry(symbol, timeframe, limit=self.lookback_periods)
+            ohlcv = await self._fetch_with_retry(symbol, timeframe, limit=limit)  # Pass limit explicitly
             logger.info(f"Fetched {len(ohlcv)} rows for {symbol}")
-            if not ohlcv or len(ohlcv) < self.lookback_periods:
+            if not ohlcv or len(ohlcv) < self.min_data_points:  # Use min_data_points (100) instead of lookback_periods
                 logger.warning(f"Insufficient rows for {symbol}: {len(ohlcv)}")
                 return pd.DataFrame()
             
@@ -200,11 +200,11 @@ class MLTradingAnalyzer:
             return pd.DataFrame()
     
     async def _fetch_with_retry(self, symbol: str, timeframe: str, 
-                              limit: int, max_retries: int = 3) -> List:
+                              limit: 500, max_retries: int = 3) -> List:
         """Fetch data with retry logic"""
         for attempt in range(max_retries):
             try:
-                return self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+                return await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
             except Exception as e:
                 if attempt == max_retries - 1:
                     raise e
