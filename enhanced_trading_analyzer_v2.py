@@ -1047,74 +1047,113 @@ class MLTradingAnalyzer:
             return None
     
     async def scan_all_coins(self) -> List[Dict]:
-        """Scan all coins using ML approach"""
+        """Scan all coins using ML approach with batching for memory efficiency"""
         signals = []
         processed_count = 0
-        
+    
         # Randomize order
         import random
         coins_to_scan = self.coins.copy()
         random.shuffle(coins_to_scan)
+    
+        # BATCH PROCESSING CONFIGURATION
+        BATCH_SIZE = 8  # Process 8 coins at a time (adjust based on your memory)
+    
+        logger.info(f"Starting ML scan of {len(coins_to_scan)} coins in batches of {BATCH_SIZE}")
+    
+        # Process coins in batches
+        for batch_idx in range(0, len(coins_to_scan), BATCH_SIZE):
+            batch = coins_to_scan[batch_idx:batch_idx + BATCH_SIZE]
+            batch_signals = []
         
-        logger.info(f"Starting ML scan of {len(coins_to_scan)} coins")
+            logger.info(f"Processing batch {batch_idx//BATCH_SIZE + 1}/{(len(coins_to_scan)-1)//BATCH_SIZE + 1}")
         
-        for symbol in coins_to_scan:
-            try:
-                if len(signals) >= self.max_signals_per_scan:
-                    break
+            for symbol in batch:
+                try:
+                    if len(signals) >= self.max_signals_per_scan:
+                        break
                 
-                processed_count += 1
+                    processed_count += 1
                 
-                # Get extended market data for ML
-                df = await self.get_market_data(symbol, '1h', self.lookback_periods)
-                if df.empty or len(df) < self.lookback_periods:
-                    continue
+                    # Get extended market data for ML
+                    df = await self.get_market_data(symbol, '1h', self.lookback_periods)
+                    if df.empty or len(df) < self.lookback_periods:
+                        continue
                 
-                # Generate ML signal
-                signal = await self.generate_ml_signal(df, symbol)
+                    # Generate ML signal
+                    signal = await self.generate_ml_signal(df, symbol)
                 
-                if signal:
-                    # Convert to dict
-                    signal_dict = {
-                        'signal_id': signal.signal_id,
-                        'timestamp': signal.timestamp,
-                        'coin': signal.coin,
-                        'direction': signal.direction,
-                        'entry_price': signal.entry_price,
-                        'current_price': signal.current_price,
-                        'take_profit': signal.take_profit,
-                        'stop_loss': signal.stop_loss,
-                        'confidence': signal.confidence,
-                        'analysis_data': {
-                            'ml_prediction': signal.analysis_summary['ml_prediction'],
-                            'model_confidence': signal.analysis_summary['model_confidence'],
-                            'model_type': signal.analysis_summary['model_type'],
-                            'confluence_factors': signal.confluence_factors,
-                            'risk_reward_ratio': signal.risk_reward_ratio,
-                            'risk_percentage': signal.risk_percentage,
-                            'signal_grade': 'institutional' if signal.strength == SignalStrength.INSTITUTIONAL else 'ml_based',
-                            'feature_importance_top5': dict(list(signal.feature_importance.items())[:5])
-                        },
-                        'indicators': {
-                            'ml_prediction_pct': round(signal.ml_prediction * 100, 2),
-                            'model_confidence': signal.model_confidence,
-                            'volatility': signal.analysis_summary['volatility']
+                    if signal:
+                        # Convert to dict
+                        signal_dict = {
+                            'signal_id': signal.signal_id,
+                            'timestamp': signal.timestamp,
+                            'coin': signal.coin,
+                            'direction': signal.direction,
+                            'entry_price': signal.entry_price,
+                            'current_price': signal.current_price,
+                            'take_profit': signal.take_profit,
+                            'stop_loss': signal.stop_loss,
+                            'confidence': signal.confidence,
+                            'analysis_data': {
+                                'ml_prediction': signal.analysis_summary['ml_prediction'],
+                                'model_confidence': signal.analysis_summary['model_confidence'],
+                                'model_type': signal.analysis_summary['model_type'],
+                                'confluence_factors': signal.confluence_factors,
+                                'risk_reward_ratio': signal.risk_reward_ratio,
+                                'risk_percentage': signal.risk_percentage,
+                                'signal_grade': 'institutional' if signal.strength == SignalStrength.INSTITUTIONAL else 'ml_based',
+                                'feature_importance_top5': dict(list(signal.feature_importance.items())[:5])
+                            },
+                            'indicators': {
+                                'ml_prediction_pct': round(signal.ml_prediction * 100, 2),
+                                'model_confidence': signal.model_confidence,
+                                'volatility': signal.analysis_summary['volatility']
+                            }
                         }
-                    }
                     
-                    signals.append(signal_dict)
-                    logger.info(f"ML Signal: {symbol} {signal.direction} "
-                              f"(Pred: {signal.ml_prediction:.4f}, Conf: {signal.model_confidence:.3f})")
+                        batch_signals.append(signal_dict)
+                        signals.append(signal_dict)
+                        logger.info(f"ML Signal: {symbol} {signal.direction} "
+                                f"(Pred: {signal.ml_prediction:.4f}, Conf: {signal.model_confidence:.3f})")
                 
-                # Rate limiting
-                await asyncio.sleep(0.8)  # Slightly slower for ML processing
+                    # Rate limiting
+                    await asyncio.sleep(0.8)
                 
-            except Exception as e:
-                logger.error(f"Error scanning {symbol}: {e}")
-                continue
+                except Exception as e:
+                    logger.error(f"Error scanning {symbol}: {e}")
+                    continue
         
+            # CRITICAL: Clear memory after each batch
+            if batch_idx + BATCH_SIZE < len(coins_to_scan):  # Don't clear on last batch
+                self._clear_batch_memory()
+                logger.info(f"Batch complete. Cleared memory. Found {len(batch_signals)} signals in this batch")
+            
+                # Optional: Small delay between batches
+                await asyncio.sleep(2)
+        
+            # Stop if we have enough signals
+            if len(signals) >= self.max_signals_per_scan:
+                break
+    
         logger.info(f"ML scan complete: {len(signals)} signals from {processed_count} coins")
         return signals
+
+    def _clear_batch_memory(self):
+        """Clear memory between batches to prevent OOM"""
+        try:
+            # Clear cache
+            self.cache.clear()
+        
+            # Force garbage collection
+            import gc
+            gc.collect()
+        
+            # Clear any temporary dataframes if stored
+            # This is safe because models are persisted separately
+        
+        except Exception as e:
+            logger.warning(f"Memory cleanup warning: {e}")
     
     async def get_current_price(self, symbol: str) -> float:
         """Get current price"""
