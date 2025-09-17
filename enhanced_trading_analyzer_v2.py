@@ -31,7 +31,6 @@ import scipy
 from scipy import stats
 from scipy.linalg import qr
 import joblib
-import shap
 
 # Define logger before using it
 logger = logging.getLogger(__name__)
@@ -843,21 +842,7 @@ class MLTradingAnalyzer:
                 feature_importance = {}
             
             # Calculate SHAP values (for top 10 features only to save time)
-            shap_importance = {}
-            try:
-                top_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)[:10]
-                top_feature_names = [f[0] for f in top_features]
-                X_sample = X_scaled[top_feature_names].tail(50)  # Reduce sample size from 100 to 50
-    
-                # Use TreeExplainer with additivity check disabled
-                explainer = shap.TreeExplainer(final_model)
-                shap_values = explainer.shap_values(X_sample)
-    
-                # Handle different SHAP output formats
-                if isinstance(shap_values, list):
-                    shap_values = shap_values[0]  # For multi-output models, take first output
-    
-                shap_importance = dict(zip(top_feature_names, np.abs(shap_values).mean(axis=0)))
+            shap_importance = {}            
     
             except Exception as e:
                 logger.warning(f"SHAP calculation failed for {symbol}: {e}")
