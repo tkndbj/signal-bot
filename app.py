@@ -215,7 +215,7 @@ class MLTradingBot:
                 logger.error(f"Invalid symbol: {signal_data['coin']}")
                 return False
 
-            symbol = signal_data['coin'].replace('/USDT', '') + 'USDT'
+            symbol = signal_data['coin']
             logger.info(f"Constructed symbol: {symbol}")
             # Get current balance
             balance_info = await self.get_account_balance()
@@ -231,11 +231,11 @@ class MLTradingBot:
             position_value = account_equity * leverage
             
             # Get current market price
-            ticker = self.analyzer.exchange.fetch_ticker(signal_data['coin'].replace('/USDT', '') + 'USDT')
+            ticker = self.analyzer.exchange.fetch_ticker(signal_data['coin'])
             current_price = ticker['last']
             
             # Calculate quantity
-            symbol_info = self.analyzer.exchange.market(signal_data['coin'].replace('/USDT', '') + 'USDT')
+            symbol_info = self.analyzer.exchange.market(signal_data['coin'])
             min_qty = symbol_info['limits']['amount']['min']
             qty_precision = symbol_info['precision']['amount']  # e.g., 0 for int
 
@@ -248,7 +248,7 @@ class MLTradingBot:
             
             # Set leverage for the symbol
             try:
-                self.analyzer.exchange.set_leverage(leverage, signal_data['coin'].replace('/USDT', '') + 'USDT')
+                self.analyzer.exchange.set_leverage(leverage, signal_data['coin'])
             except:
                 pass  # Some symbols might have fixed leverage
             
@@ -256,7 +256,7 @@ class MLTradingBot:
             side = 'buy' if signal_data['direction'] == 'LONG' else 'sell'
             
             order = self.analyzer.exchange.create_order(
-                symbol=signal_data['coin'].replace('/USDT', '') + 'USDT',
+                symbol=signal_data['coin'],
                 type='market',
                 side=side,
                 amount=quantity,
@@ -269,7 +269,7 @@ class MLTradingBot:
             if order and order['status'] in ['closed', 'filled']:
                 # Set stop loss and take profit
                 await self.set_sl_tp_orders(
-                    signal_data['coin'].replace('/USDT', '') + 'USDT',
+                    signal_data['coin'],
                     signal_data['direction'],
                     quantity,
                     signal_data['stop_loss'],
@@ -341,7 +341,7 @@ class MLTradingBot:
     async def close_real_position(self, signal_data: Dict, reason: str) -> bool:
         """Close real position on Bybit"""
         try:
-            symbol = signal_data['coin'].replace('/USDT', '') + 'USDT'
+            symbol = signal_data['coin']
             
             # Get current position
             positions = self.analyzer.exchange.fetch_positions([symbol])
@@ -1400,8 +1400,7 @@ class MLTradingBot:
             
             for signal in active_signals:
                 try:
-                    coin = signal['coin'].replace('/USDT', '')
-                    symbol = f"{coin}USDT"
+                    symbol = signal['coin']
 
                     # Validate symbol
                     if not await self.validate_symbol(signal['coin']):
