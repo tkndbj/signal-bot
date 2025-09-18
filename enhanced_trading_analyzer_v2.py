@@ -134,22 +134,26 @@ class MLTradingAnalyzer:
                 'rateLimit': 100,
                 'options': {
                     'defaultType': 'linear',  # USDT perpetual
+                    'defaultSubaccount': 'UNIFIED',  # Add this
+                    'accountsByType': {
+                        'spot': 'UNIFIED',
+                        'linear': 'UNIFIED',
+                        'inverse': 'UNIFIED'
+                    },
                     'adjustForTimeDifference': True,
                     'recvWindow': 10000
                 }
             })
         
+            # Set to unified mode explicitly
+            exchange.options['account'] = 'UNIFIED'
             exchange.load_markets()
-            logger.info("Bybit exchange connected for REAL TRADING")
+            logger.info("Bybit exchange connected for REAL TRADING (Unified Account)")
             return exchange   
-            
+        
         except Exception as e:
             logger.error(f"Failed to initialize exchange: {e}")
-            return ccxt.binance({
-                'rateLimit': 1000,
-                'enableRateLimit': True,
-                'timeout': 15000
-            })
+            raise  # Don't fallback to Binance for real trading
     
     async def get_market_data(self, symbol: str, timeframe: str = '1h', 
                             limit: int = 500) -> pd.DataFrame:

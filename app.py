@@ -172,14 +172,26 @@ class MLTradingBot:
     async def get_account_balance(self) -> Dict:
         """Get real account balance from Bybit"""
         try:
-            balance = self.analyzer.exchange.fetch_balance()
-            usdt_balance = balance['USDT']['free'] if 'USDT' in balance else 0
-            used_balance = balance['USDT']['used'] if 'USDT' in balance else 0
-            
+            # Bybit requires specific parameters for unified account
+            params = {'type': 'unified'}
+            balance = self.analyzer.exchange.fetch_balance(params)
+        
+            # For Bybit unified account
+            if 'USDT' in balance['info']['result']['list'][0]['coin']:
+                for coin in balance['info']['result']['list'][0]['coin']:
+                    if coin['coin'] == 'USDT':
+                        usdt_balance = float(coin['walletBalance'])
+                        available_balance = float(coin['availableToWithdraw'])
+                        break
+            else:
+                # Fallback to standard format
+                usdt_balance = balance['USDT']['free'] if 'USDT' in balance else 0
+                available_balance = usdt_balance
+        
             return {
-                'free': usdt_balance,
-                'used': used_balance,
-                'total': usdt_balance + used_balance
+                'free': available_balance,
+                'used': usdt_balance - available_balance,
+                'total': usdt_balance
             }
         except Exception as e:
             logger.error(f"Error fetching balance: {e}")
