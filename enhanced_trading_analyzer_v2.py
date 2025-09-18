@@ -80,12 +80,12 @@ class MLTradingAnalyzer:
         
         # Core parameters
         self.coins = [
-            'WLFI/USDT','DOGE/USDT','BONK/USDT','FLOKI/USDT','LINK/USDT','PEPE/USDT',
-            'NEAR/USDT','TIA/USDT','ARB/USDT','APT/USDT','TAO/USDT','FET/USDT',
-            'SUI/USDT','SEI/USDT','OP/USDT','LDO/USDT','SHIB/USDT','BOME/USDT',
-            'PENDLE/USDT','JUP/USDT','LINEA/USDT','UB/USDT','CGPT/USDT',
-            'POPCAT/USDT','WIF/USDT','OL/USDT','JASMY/USDT','BLUR/USDT','GMX/USDT',
-            'COMP/USDT','CRV/USDT','TRUMP/USDT','1INCH/USDT','SUSHI/USDT','YFI/USDT','MOVE/USDT'
+            'WLFI', 'DOGE', 'BONK', 'FLOKI', 'LINK', 'PEPE',
+            'NEAR', 'TIA', 'ARB', 'APT', 'TAO', 'FET',
+            'SUI', 'SEI', 'OP', 'LDO', 'SHIB', 'BOME',
+            'PENDLE', 'JUP', 'LINEA', 'UB', 'CGPT',
+            'POPCAT', 'WIF', 'OL', 'JASMY', 'BLUR', 'GMX',
+            'COMP', 'CRV', 'TRUMP', '1INCH', 'SUSHI', 'YFI', 'MOVE'
         ]
         
         # Enhanced trading parameters

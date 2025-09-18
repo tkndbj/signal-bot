@@ -325,7 +325,7 @@ class MLTradingBot:
     async def close_real_position(self, signal_data: Dict, reason: str) -> bool:
         """Close real position on Bybit"""
         try:
-            symbol = signal_data['coin'] + '/USDT:USDT'
+            symbol = signal_data['coin'] + 'USDT'
             
             # Get current position
             positions = self.analyzer.exchange.fetch_positions([symbol])
