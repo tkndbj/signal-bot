@@ -197,10 +197,26 @@ class MLTradingBot:
         except Exception as e:
             logger.error(f"Error fetching balance: {e}")
             return {'free': 0, 'used': 0, 'total': 0}
+
+    async def validate_symbol(self, coin: str) -> bool:
+        try:
+            valid_symbols = await self.analyzer.exchange.load_markets()
+            symbol = coin.replace('/USDT', '') + 'USDT'
+            return symbol in valid_symbols
+        except Exception as e:
+            logger.error(f"Error validating symbol {coin}: {e}")
+            return False
     
     async def execute_real_trade(self, signal_data: Dict) -> bool:
         """Execute real trade on Bybit with 15% of balance and 15x leverage"""
         try:
+            logger.info(f"Processing coin: {signal_data['coin']}")
+            if not await self.validate_symbol(signal_data['coin']):
+                logger.error(f"Invalid symbol: {signal_data['coin']}")
+                return False
+
+            symbol = signal_data['coin'].replace('/USDT', '') + 'USDT'
+            logger.info(f"Constructed symbol: {symbol}")
             # Get current balance
             balance_info = await self.get_account_balance()
             available_balance = balance_info['free']
@@ -215,11 +231,11 @@ class MLTradingBot:
             position_value = account_equity * leverage
             
             # Get current market price
-            ticker = self.analyzer.exchange.fetch_ticker(signal_data['coin'] + '/USDT:USDT')
+            ticker = self.analyzer.exchange.fetch_ticker(signal_data['coin'].replace('/USDT', '') + 'USDT')
             current_price = ticker['last']
             
             # Calculate quantity
-            symbol_info = self.analyzer.exchange.market(signal_data['coin'] + '/USDT:USDT')
+            symbol_info = self.analyzer.exchange.market(signal_data['coin'].replace('/USDT', '') + 'USDT')
             min_qty = symbol_info['limits']['amount']['min']
             qty_precision = symbol_info['precision']['amount']  # e.g., 0 for int
 
@@ -232,7 +248,7 @@ class MLTradingBot:
             
             # Set leverage for the symbol
             try:
-                self.analyzer.exchange.set_leverage(leverage, signal_data['coin'] + '/USDT:USDT')
+                self.analyzer.exchange.set_leverage(leverage, signal_data['coin'].replace('/USDT', '') + 'USDT')
             except:
                 pass  # Some symbols might have fixed leverage
             
@@ -240,7 +256,7 @@ class MLTradingBot:
             side = 'buy' if signal_data['direction'] == 'LONG' else 'sell'
             
             order = self.analyzer.exchange.create_order(
-                symbol=signal_data['coin'] + '/USDT:USDT',
+                symbol=signal_data['coin'].replace('/USDT', '') + 'USDT',
                 type='market',
                 side=side,
                 amount=quantity,
@@ -253,7 +269,7 @@ class MLTradingBot:
             if order and order['status'] in ['closed', 'filled']:
                 # Set stop loss and take profit
                 await self.set_sl_tp_orders(
-                    signal_data['coin'] + '/USDT:USDT',
+                    signal_data['coin'].replace('/USDT', '') + 'USDT',
                     signal_data['direction'],
                     quantity,
                     signal_data['stop_loss'],
@@ -325,7 +341,7 @@ class MLTradingBot:
     async def close_real_position(self, signal_data: Dict, reason: str) -> bool:
         """Close real position on Bybit"""
         try:
-            symbol = signal_data['coin'] + 'USDT'
+            symbol = signal_data['coin'].replace('/USDT', '') + 'USDT'
             
             # Get current position
             positions = self.analyzer.exchange.fetch_positions([symbol])
@@ -383,6 +399,7 @@ class MLTradingBot:
 
     def validate_ml_signal_before_save(self, signal_data: Dict) -> bool:
         try:
+            signal_data['coin'] = signal_data['coin'].replace('/USDT', '')
             # Standard validation
             if not self.validate_signal_before_save(signal_data):
                 return False
@@ -424,6 +441,7 @@ class MLTradingBot:
 
     def validate_signal_before_save(self, signal_data: Dict) -> bool:
         try:
+            signal_data['coin'] = signal_data['coin'].replace('/USDT', '')
             # Check required fields
             required_fields = ['signal_id', 'coin', 'direction', 'entry_price', 'take_profit', 'stop_loss']
             for field in required_fields:
@@ -557,7 +575,8 @@ class MLTradingBot:
                 
                 for signal in signals:
                     try:
-                        current_price = await self.analyzer.get_current_price(signal['coin'])
+                        symbol = signal['coin'].replace('/USDT', '') + 'USDT'
+                        current_price = await self.analyzer.get_current_price(symbol)
                         
                         if current_price > 0:
                             # Update database
@@ -663,7 +682,7 @@ class MLTradingBot:
         async def get_feature_analysis(coin: str):
             """Get detailed feature analysis for a coin"""
             try:
-                symbol = f"{coin}/USDT"
+                symbol = f"{coin}USDT"
                 
                 # Get market data
                 df = await self.analyzer.get_market_data(symbol, '1h', 500)
@@ -725,7 +744,8 @@ class MLTradingBot:
         
                 for signal in active_signals:
                     try:
-                        positions = self.analyzer.exchange.fetch_positions([signal['coin'] + '/USDT:USDT'])
+                        symbol = signal['coin'].replace('/USDT', '') + 'USDT'
+                        positions = self.analyzer.exchange.fetch_positions([symbol])
                         for pos in positions:
                             if pos['contracts'] > 0:
                                 total_open_pnl += pos['unrealizedPnl'] or 0
@@ -1380,8 +1400,13 @@ class MLTradingBot:
             
             for signal in active_signals:
                 try:
-                    coin = signal['coin']
-                    symbol = f"{coin}/USDT"
+                    coin = signal['coin'].replace('/USDT', '')
+                    symbol = f"{coin}USDT"
+
+                    # Validate symbol
+                    if not await self.validate_symbol(signal['coin']):
+                        logger.error(f"Invalid symbol: {signal['coin']}")
+                        continue
                     
                     # Get fresh market data
                     df = await self.analyzer.get_market_data(symbol, '1h', 100)
