@@ -1236,21 +1236,20 @@ class MLTradingAnalyzer:
             
             # Dynamic stop loss based on volatility and prediction confidence
             base_stop_pct = max(0.015, atr_pct * 1.5)  # Minimum 1.5% or 1.5x ATR
-            confidence_multiplier = 2.0 - model_confidence  # Higher confidence = tighter stops
+            confidence_multiplier = 2.0 - model_confidence
             stop_pct = base_stop_pct * confidence_multiplier
-            
-            # Ensure max risk limit
             stop_pct = min(stop_pct, self.max_risk_per_trade / 100)
-            
+
+            # Ensure minimum price difference for low-price assets
+            min_price_diff = max(current_price * 0.01, 0.001)  # At least 0.001
             if direction == 'LONG':
                 stop_loss = current_price * (1 - stop_pct)
-                # Take profit based on prediction and risk-reward ratio
-                min_tp = current_price * (1 + stop_pct * self.min_rr_ratio)
+                min_tp = current_price + min_price_diff  # Ensure minimum TP distance
                 predicted_tp = current_price * (1 + abs(prediction))
                 take_profit = max(min_tp, predicted_tp)
             else:
                 stop_loss = current_price * (1 + stop_pct)
-                min_tp = current_price * (1 - stop_pct * self.min_rr_ratio)
+                min_tp = current_price - min_price_diff
                 predicted_tp = current_price * (1 - abs(prediction))
                 take_profit = min(min_tp, predicted_tp)
             

@@ -202,10 +202,14 @@ class MLTradingBot:
     async def execute_real_trade(self, signal_data: Dict) -> bool:
         """Execute real trade on Bybit with 15% of balance and 15x leverage"""
         try:
-            logger.info(f"Processing coin: {signal_data['coin']}")            
-
+            logger.info(f"Processing coin: {signal_data['coin']}")
             symbol = signal_data['coin']
+            logger.info(f"Bypassing symbol validation for {signal_data['coin']}")
             logger.info(f"Constructed symbol: {symbol}")
+            # Convert prices to floats
+            signal_data['entry_price'] = float(signal_data['entry_price'])
+            signal_data['stop_loss'] = float(signal_data['stop_loss'])
+            signal_data['take_profit'] = float(signal_data['take_profit'])
             # Get current balance
             balance_info = await self.get_account_balance()
             available_balance = balance_info['free']
@@ -445,7 +449,7 @@ class MLTradingBot:
             direction = signal_data['direction']
     
             # Ensure minimum price difference
-            min_price_diff = max(entry * 0.001, 0.0001)
+            min_price_diff = max(entry * 0.01, 0.001)
             if abs(entry - sl) < min_price_diff or abs(tp - entry) < min_price_diff:
                 logger.error(f"Price difference too small: SL={sl}, Entry={entry}, TP={tp}, signal_data: {signal_data}")
                 return False
