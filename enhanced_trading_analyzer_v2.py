@@ -127,33 +127,46 @@ class MLTradingAnalyzer:
     def _initialize_exchange(self) -> ccxt.Exchange:
         """Initialize Bybit exchange for real trading"""
         try:
+            api_key = os.getenv('BYBIT_API_KEY', '')
+            secret_key = os.getenv('BYBIT_SECRET_KEY', '')
+        
+            if not api_key or not secret_key:
+                raise ValueError("Bybit API credentials not found in environment")
+        
             exchange = ccxt.bybit({
-                'apiKey': os.getenv('BYBIT_API_KEY', ''),
-                'secret': os.getenv('BYBIT_SECRET_KEY', ''),
+                'apiKey': api_key,
+                'secret': secret_key,
                 'enableRateLimit': True,
                 'rateLimit': 100,
                 'options': {
-                    'defaultType': 'linear',  # USDT perpetual
-                    'defaultSubaccount': 'UNIFIED',  # Add this
-                    'accountsByType': {
-                        'spot': 'UNIFIED',
-                        'linear': 'UNIFIED',
-                        'inverse': 'UNIFIED'
-                    },
+                    'defaultType': 'linear',  # For USDT perpetuals
+                    'defaultSettle': 'USDT',
                     'adjustForTimeDifference': True,
-                    'recvWindow': 10000
+                    'recvWindow': 10000,
+                    'accountType': 'UNIFIED',  # Explicitly set
+                    'account': 'unified'
                 }
             })
         
-            # Set to unified mode explicitly
-            exchange.options['account'] = 'UNIFIED'
+            # Load markets first
             exchange.load_markets()
+        
+            # Test connection with balance fetch
+            try:
+                test_response = exchange.private_get_v5_account_wallet_balance({'accountType': 'UNIFIED'})
+                if test_response.get('retCode') == 0:
+                    logger.info(f"Bybit connection test successful.")
+                else:
+                    logger.warning(f"Bybit API returned: {test_response.get('retMsg')}")
+            except Exception as e:
+                logger.warning(f"Balance test failed, continuing anyway: {e}")
+        
             logger.info("Bybit exchange connected for REAL TRADING (Unified Account)")
             return exchange   
         
         except Exception as e:
             logger.error(f"Failed to initialize exchange: {e}")
-            raise  # Don't fallback to Binance for real trading
+            raise  # Don't fallback for real trading
     
     async def get_market_data(self, symbol: str, timeframe: str = '1h', 
                             limit: int = 500) -> pd.DataFrame:

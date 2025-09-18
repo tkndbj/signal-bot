@@ -172,29 +172,62 @@ class MLTradingBot:
     async def get_account_balance(self) -> Dict:
         """Get real account balance from Bybit"""
         try:
-            # Bybit requires specific parameters for unified account
-            params = {'type': 'unified'}
-            balance = self.analyzer.exchange.fetch_balance(params)
+            # Try direct Bybit V5 API call
+            response = self.analyzer.exchange.private_get_v5_account_wallet_balance({
+                'accountType': 'UNIFIED'
+            })
         
-            # For Bybit unified account
-            if 'USDT' in balance['info']['result']['list'][0]['coin']:
-                for coin in balance['info']['result']['list'][0]['coin']:
-                    if coin['coin'] == 'USDT':
-                        usdt_balance = float(coin['walletBalance'])
-                        available_balance = float(coin['availableToWithdraw'])
-                        break
+            if response.get('retCode') == 0 and response.get('result'):
+                result = response['result']
+                if 'list' in result and len(result['list']) > 0:
+                    account_info = result['list'][0]
+                
+                    # Find USDT in coins list
+                    for coin_data in account_info.get('coin', []):
+                        if coin_data.get('coin') == 'USDT':
+                            # Safely get values with defaults
+                            wallet_balance = float(coin_data.get('walletBalance', 0) or 0)
+                            available = float(coin_data.get('availableToWithdraw', 0) or 0)
+                        
+                            # Calculate used (in positions/orders)
+                            used = wallet_balance - available if wallet_balance > available else 0
+                        
+                            return {
+                                'free': available,
+                                'used': used,
+                                'total': wallet_balance
+                            }
+                
+                    # If USDT not found, return zeros
+                    logger.warning("USDT not found in wallet")
+                    return {'free': 0, 'used': 0, 'total': 0}
             else:
-                # Fallback to standard format
-                usdt_balance = balance['USDT']['free'] if 'USDT' in balance else 0
-                available_balance = usdt_balance
-        
-            return {
-                'free': available_balance,
-                'used': usdt_balance - available_balance,
-                'total': usdt_balance
-            }
+                logger.error(f"Bybit API error: {response.get('retMsg', 'Unknown error')}")
+                return {'free': 0, 'used': 0, 'total': 0}
+            
         except Exception as e:
             logger.error(f"Error fetching balance: {e}")
+            # Try fallback method with ccxt
+            try:
+                balance = self.analyzer.exchange.fetch_balance()
+                if 'USDT' in balance and balance['USDT']:
+                    free = float(balance['USDT'].get('free', 0) or 0)
+                    used = float(balance['USDT'].get('used', 0) or 0)
+                    total = float(balance['USDT'].get('total', 0) or 0)
+                
+                    # Ensure no None values
+                    free = free if free else 0
+                    used = used if used else 0
+                    total = total if total else (free + used)
+                
+                    return {
+                        'free': free,
+                        'used': used,
+                        'total': total
+                    }
+            except Exception as fallback_error:
+                logger.error(f"Fallback balance fetch also failed: {fallback_error}")
+        
             return {'free': 0, 'used': 0, 'total': 0}
     
     async def execute_real_trade(self, signal_data: Dict) -> bool:
