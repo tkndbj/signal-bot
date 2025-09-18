@@ -83,7 +83,7 @@ class MLTradingAnalyzer:
             'WLFI/USDT','DOGE/USDT','BONK/USDT','FLOKI/USDT','LINK/USDT','PEPE/USDT',
             'NEAR/USDT','TIA/USDT','ARB/USDT','APT/USDT','TAO/USDT','FET/USDT',
             'SUI/USDT','SEI/USDT','OP/USDT','LDO/USDT','SHIB/USDT','BOME/USDT',
-            'PENDLE/USDT','JUP/USDT','LINEA/USDT','UB/USDT','ZEC/USDT','CGPT/USDT',
+            'PENDLE/USDT','JUP/USDT','LINEA/USDT','UB/USDT','CGPT/USDT',
             'POPCAT/USDT','WIF/USDT','OL/USDT','JASMY/USDT','BLUR/USDT','GMX/USDT',
             'COMP/USDT','CRV/USDT','TRUMP/USDT','1INCH/USDT','SUSHI/USDT','YFI/USDT','MOVE/USDT'
         ]
@@ -150,7 +150,7 @@ class MLTradingAnalyzer:
         
             # Test balance fetch
             try:
-                balance = exchange.fetch_balance()
+                balance = exchange.fetch_balance({'type': 'unified'})
                 if 'USDT' in balance:
                     total = balance['USDT'].get('total', 0)
                     logger.info(f"Bybit connected - USDT balance: {total}")

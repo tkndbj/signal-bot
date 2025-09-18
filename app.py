@@ -221,10 +221,13 @@ class MLTradingBot:
             # Calculate quantity
             symbol_info = self.analyzer.exchange.market(signal_data['coin'] + '/USDT:USDT')
             min_qty = symbol_info['limits']['amount']['min']
-            qty_precision = symbol_info['precision']['amount']
-            
+            qty_precision = symbol_info['precision']['amount']  # e.g., 0 for int
+
             quantity = position_value / current_price
-            quantity = round(quantity, qty_precision)
+            if qty_precision == 0:
+                quantity = int(quantity)  # Force int if precision 0
+            else:
+                quantity = self.analyzer.exchange.amount_to_precision(symbol, quantity)
             quantity = max(quantity, min_qty)
             
             # Set leverage for the symbol
