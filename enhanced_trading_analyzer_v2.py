@@ -140,33 +140,29 @@ class MLTradingAnalyzer:
                 'rateLimit': 100,
                 'options': {
                     'defaultType': 'linear',  # For USDT perpetuals
-                    'defaultSettle': 'USDT',
                     'adjustForTimeDifference': True,
-                    'recvWindow': 10000,
-                    'accountType': 'UNIFIED',  # Explicitly set
-                    'account': 'unified'
+                    'recvWindow': 10000
                 }
             })
         
-            # Load markets first
+            # Load markets
             exchange.load_markets()
         
-            # Test connection with balance fetch
+            # Test balance fetch
             try:
-                test_response = exchange.private_get_v5_account_wallet_balance({'accountType': 'UNIFIED'})
-                if test_response.get('retCode') == 0:
-                    logger.info(f"Bybit connection test successful.")
-                else:
-                    logger.warning(f"Bybit API returned: {test_response.get('retMsg')}")
+                balance = exchange.fetch_balance()
+                if 'USDT' in balance:
+                    total = balance['USDT'].get('total', 0)
+                    logger.info(f"Bybit connected - USDT balance: {total}")
             except Exception as e:
-                logger.warning(f"Balance test failed, continuing anyway: {e}")
+                logger.warning(f"Balance test: {e}")
         
-            logger.info("Bybit exchange connected for REAL TRADING (Unified Account)")
+            logger.info("Bybit exchange connected for REAL TRADING")
             return exchange   
         
         except Exception as e:
             logger.error(f"Failed to initialize exchange: {e}")
-            raise  # Don't fallback for real trading
+            raise
     
     async def get_market_data(self, symbol: str, timeframe: str = '1h', 
                             limit: int = 500) -> pd.DataFrame:
