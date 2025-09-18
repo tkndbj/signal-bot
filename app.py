@@ -173,18 +173,18 @@ class MLTradingBot:
         """Get real account balance from Bybit"""
         try:
             # Use basic fetch_balance which works for your account
-            balance = self.analyzer.exchange.fetch_balance()
-        
+            balance = self.analyzer.exchange.fetch_balance({'accountType': 'UNIFIED'})
+    
             if 'USDT' in balance:
                 # Handle None values properly
                 total = float(balance['USDT'].get('total', 0) or 0)
                 free = float(balance['USDT'].get('free', 0) or total)  # Use total if free is None
                 used = float(balance['USDT'].get('used', 0) or 0)
-            
+        
                 # If free is still 0 but we have total, assume all is free
                 if free == 0 and total > 0:
                     free = total
-            
+        
                 return {
                     'free': free,
                     'used': used,
@@ -193,7 +193,7 @@ class MLTradingBot:
             else:
                 logger.warning("USDT not found in balance response")
                 return {'free': 0, 'used': 0, 'total': 0}
-            
+        
         except Exception as e:
             logger.error(f"Error fetching balance: {e}")
             return {'free': 0, 'used': 0, 'total': 0}
