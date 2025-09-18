@@ -445,9 +445,9 @@ class MLTradingBot:
             direction = signal_data['direction']
     
             # Ensure minimum price difference
-            min_price_diff = entry * 0.001
+            min_price_diff = max(entry * 0.001, 0.0001)
             if abs(entry - sl) < min_price_diff or abs(tp - entry) < min_price_diff:
-                logger.error(f"Price difference too small: SL={sl}, Entry={entry}, TP={tp}")
+                logger.error(f"Price difference too small: SL={sl}, Entry={entry}, TP={tp}, signal_data: {signal_data}")
                 return False
     
             if direction == 'LONG':
