@@ -200,9 +200,8 @@ class MLTradingBot:
 
     def validate_symbol(self, coin: str) -> bool:
         try:
-            valid_symbols = self.analyzer.exchange.load_markets()
             symbol = coin  # Already in SYMBOLUSDT format
-            return symbol in valid_symbols
+            return symbol in self.analyzer.markets  # Use cached markets
         except Exception as e:
             logger.error(f"Error validating symbol {coin}: {e}")
             return False

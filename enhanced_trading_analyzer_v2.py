@@ -107,6 +107,10 @@ class MLTradingAnalyzer:
         self.pca_variance_threshold = 0.95
         
         # Models storage
+        # Cache markets
+        self.markets = self.exchange.markets  # Cache for fast validation
+        logger.info(f"Loaded {len(self.exchange.markets)} markets from Bybit")
+        # Models storage
         self.models = {}
         self.scalers = {}
         self.feature_selectors = {}
@@ -147,6 +151,9 @@ class MLTradingAnalyzer:
         
             # Load markets
             exchange.load_markets()
+            if not exchange.markets:
+                logger.error("Failed to load markets from Bybit")
+                raise ValueError("No markets loaded")
         
             # Test balance fetch
             try:
