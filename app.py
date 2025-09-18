@@ -198,10 +198,10 @@ class MLTradingBot:
             logger.error(f"Error fetching balance: {e}")
             return {'free': 0, 'used': 0, 'total': 0}
 
-    async def validate_symbol(self, coin: str) -> bool:
+    def validate_symbol(self, coin: str) -> bool:
         try:
-            valid_symbols = await self.analyzer.exchange.load_markets()
-            symbol = coin.replace('/USDT', '') + 'USDT'
+            valid_symbols = self.analyzer.exchange.load_markets()
+            symbol = coin  # Already in SYMBOLUSDT format
             return symbol in valid_symbols
         except Exception as e:
             logger.error(f"Error validating symbol {coin}: {e}")
@@ -211,7 +211,7 @@ class MLTradingBot:
         """Execute real trade on Bybit with 15% of balance and 15x leverage"""
         try:
             logger.info(f"Processing coin: {signal_data['coin']}")
-            if not await self.validate_symbol(signal_data['coin']):
+            if not self.validate_symbol(signal_data['coin']):
                 logger.error(f"Invalid symbol: {signal_data['coin']}")
                 return False
 
@@ -1403,7 +1403,7 @@ class MLTradingBot:
                     symbol = signal['coin']
 
                     # Validate symbol
-                    if not await self.validate_symbol(signal['coin']):
+                    if not self.validate_symbol(signal['coin']):
                         logger.error(f"Invalid symbol: {signal['coin']}")
                         continue
                     
