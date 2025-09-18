@@ -80,13 +80,12 @@ class MLTradingAnalyzer:
         
         # Core parameters
         self.coins = [
-            'SOL/USDT','DOGE/USDT','BONK/USDT','FLOKI/USDT','LINK/USDT','PEPE/USDT',
+            'WLFI/USDT','DOGE/USDT','BONK/USDT','FLOKI/USDT','LINK/USDT','PEPE/USDT',
             'NEAR/USDT','TIA/USDT','ARB/USDT','APT/USDT','TAO/USDT','FET/USDT',
             'SUI/USDT','SEI/USDT','OP/USDT','LDO/USDT','SHIB/USDT','BOME/USDT',
             'PENDLE/USDT','JUP/USDT','LINEA/USDT','UB/USDT','ZEC/USDT','CGPT/USDT',
             'POPCAT/USDT','WIF/USDT','OL/USDT','JASMY/USDT','BLUR/USDT','GMX/USDT',
-            'COMP/USDT','CRV/USDT','SNX/USDT','1INCH/USDT','SUSHI/USDT','YFI/USDT',
-            'BAL/USDT','MKR/USDT'
+            'COMP/USDT','CRV/USDT','TRUMP/USDT','1INCH/USDT','SUSHI/USDT','YFI/USDT','MOVE/USDT'
         ]
         
         # Enhanced trading parameters
@@ -126,32 +125,28 @@ class MLTradingAnalyzer:
         logger.info("ML Trading Analyzer initialized with advanced feature engineering")
     
     def _initialize_exchange(self) -> ccxt.Exchange:
-        """Initialize exchange with robust error handling"""
+        """Initialize Bybit exchange for real trading"""
         try:
-            exchange = ccxt.binance({
-                'apiKey': os.getenv('BINANCE_API_KEY', ''),
-                'secret': os.getenv('BINANCE_SECRET_KEY', ''),
-                'sandbox': False,
-                'rateLimit': 600,
+            exchange = ccxt.bybit({
+                'apiKey': os.getenv('BYBIT_API_KEY', ''),
+                'secret': os.getenv('BYBIT_SECRET_KEY', ''),
                 'enableRateLimit': True,
-                'timeout': 10000,
+                'rateLimit': 100,
                 'options': {
-                    'defaultType': 'spot',
-                    'adjustForTimeDifference': True
+                    'defaultType': 'linear',  # USDT perpetual
+                    'adjustForTimeDifference': True,
+                    'recvWindow': 10000
                 }
             })
-            
-            exchange.load_markets()
-            logger.info("Exchange connection established successfully")
-            return exchange
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize exchange: {e}")
-            return ccxt.binance({
-                'rateLimit': 1000,
-                'enableRateLimit': True,
-                'timeout': 15000
-            })
+        
+        exchange.load_markets()
+        logger.info("Bybit exchange connected for REAL TRADING")
+        return exchange
+        
+    except Exception as e:
+        logger.error(f"Failed to initialize Bybit: {e}")
+        raise Exception("Cannot proceed without exchange connection")           
+        
     
     async def get_market_data(self, symbol: str, timeframe: str = '1h', 
                             limit: int = 500) -> pd.DataFrame:
@@ -201,6 +196,274 @@ class MLTradingAnalyzer:
         except Exception as e:
             logger.error(f"Error fetching data for {symbol}: {e}")
             return pd.DataFrame()
+
+    def detect_market_regime(self, df: pd.DataFrame) -> Dict:
+        """Detect current market regime using multiple indicators"""
+        try:
+            if len(df) < 50:
+                return {'regime': 'unknown', 'confidence': 0}
+            
+            # Calculate regime indicators
+            current_price = df['close'].iloc[-1]
+            
+            # 1. Volatility regime
+            atr_14 = talib.ATR(df['high'].values, df['low'].values, df['close'].values, 14)[-1]
+            atr_pct = atr_14 / current_price
+            vol_24h = df['close'].pct_change().rolling(24).std().iloc[-1] * np.sqrt(24)
+            
+            # Historical volatility baseline (last 100 periods)
+            hist_vol = df['close'].pct_change().rolling(24).std().mean() * np.sqrt(24)
+            vol_ratio = vol_24h / hist_vol if hist_vol > 0 else 1
+            
+            # 2. Trend regime
+            sma_20 = df['close'].rolling(20).mean().iloc[-1]
+            sma_50 = df['close'].rolling(50).mean().iloc[-1]
+            adx = talib.ADX(df['high'].values, df['low'].values, df['close'].values, 14)[-1]
+            
+            # 3. Momentum indicators
+            rsi = talib.RSI(df['close'].values, 14)[-1]
+            macd, signal, hist = talib.MACD(df['close'].values)
+            macd_momentum = hist[-1] if len(hist) > 0 else 0
+            
+            # 4. Volume analysis
+            volume_ratio = df['volume'].iloc[-1] / df['volume'].rolling(20).mean().iloc[-1]
+            
+            # Classify regime
+            regime = 'normal'
+            confidence = 0.5
+            
+            # High volatility detection
+            if vol_ratio > 2.0 or atr_pct > 0.05:
+                regime = 'high_volatility'
+                confidence = min(0.9, vol_ratio / 2.0)
+            # Low volatility
+            elif vol_ratio < 0.5 and atr_pct < 0.01:
+                regime = 'low_volatility'
+                confidence = 0.7
+            # Strong trend detection
+            elif adx > 35:
+                if current_price > sma_20 > sma_50 and rsi > 50:
+                    regime = 'trending_up'
+                    confidence = min(0.85, adx / 50)
+                elif current_price < sma_20 < sma_50 and rsi < 50:
+                    regime = 'trending_down'
+                    confidence = min(0.85, adx / 50)
+            # Ranging market
+            elif adx < 20 and abs(rsi - 50) < 20:
+                regime = 'ranging'
+                confidence = 0.6
+            
+            return {
+                'regime': regime,
+                'confidence': confidence,
+                'volatility': vol_ratio,
+                'trend_strength': adx,
+                'momentum': macd_momentum,
+                'volume_surge': volume_ratio > 2.0,
+                'indicators': {
+                    'atr_pct': atr_pct,
+                    'rsi': rsi,
+                    'adx': adx,
+                    'vol_ratio': vol_ratio
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error detecting market regime: {e}")
+            return {'regime': 'unknown', 'confidence': 0}
+    
+    def evaluate_position_health(self, signal_data: Dict, df: pd.DataFrame) -> Dict:
+        """Evaluate the health of an active position"""
+        try:
+            current_price = df['close'].iloc[-1]
+            entry_price = signal_data['entry_price']
+            direction = signal_data['direction']
+            
+            # Calculate current P&L
+            if direction == 'LONG':
+                pnl_pct = ((current_price - entry_price) / entry_price) * 100
+                distance_to_tp = (signal_data['take_profit'] - current_price) / current_price
+                distance_to_sl = (current_price - signal_data['stop_loss']) / current_price
+            else:
+                pnl_pct = ((entry_price - current_price) / entry_price) * 100
+                distance_to_tp = (current_price - signal_data['take_profit']) / current_price
+                distance_to_sl = (signal_data['stop_loss'] - current_price) / current_price
+            
+            # Get fresh ML prediction
+            if len(df) >= self.lookback_periods:
+                prediction_result = self.predict_price_movement(df, signal_data['coin'] + '/USDT')
+                ml_prediction = prediction_result.get('prediction', 0) if prediction_result else 0
+                ml_confidence = prediction_result.get('confidence', 0) if prediction_result else 0
+            else:
+                ml_prediction = 0
+                ml_confidence = 0
+            
+            # Check if prediction has flipped
+            original_ml_pred = signal_data.get('ml_prediction', 0)
+            prediction_aligned = (ml_prediction * original_ml_pred) > 0
+            
+            # Detect market regime
+            regime_info = self.detect_market_regime(df)
+            
+            # Calculate position health score (0-1)
+            health_score = 1.0
+            
+            # Penalize if ML prediction flipped
+            if not prediction_aligned and abs(ml_prediction) > 0.01:
+                health_score *= 0.3
+            
+            # Penalize if ML confidence dropped significantly
+            original_confidence = signal_data.get('model_confidence', 0.7)
+            if ml_confidence < original_confidence * 0.5:
+                health_score *= 0.5
+            
+            # Penalize if in unfavorable regime
+            if regime_info['regime'] == 'high_volatility':
+                health_score *= 0.7
+            elif (direction == 'LONG' and regime_info['regime'] == 'trending_down') or \
+                 (direction == 'SHORT' and regime_info['regime'] == 'trending_up'):
+                health_score *= 0.4
+            
+            # Boost if profitable
+            if pnl_pct > 2:
+                health_score = min(1.0, health_score * 1.3)
+            
+            return {
+                'health_score': health_score,
+                'pnl_pct': pnl_pct,
+                'ml_prediction': ml_prediction,
+                'ml_confidence': ml_confidence,
+                'prediction_aligned': prediction_aligned,
+                'regime': regime_info['regime'],
+                'regime_confidence': regime_info['confidence'],
+                'distance_to_tp': distance_to_tp,
+                'distance_to_sl': distance_to_sl,
+                'current_price': current_price,
+                'recommendation': self._get_position_recommendation(
+                    health_score, pnl_pct, prediction_aligned, regime_info
+                )
+            }
+            
+        except Exception as e:
+            logger.error(f"Error evaluating position health: {e}")
+            return {'health_score': 0.5, 'recommendation': 'hold'}
+    
+    def _get_position_recommendation(self, health_score: float, pnl_pct: float, 
+                                      prediction_aligned: bool, regime_info: Dict) -> str:
+        """Get recommendation for position management"""
+        
+        # Critical exit conditions
+        if health_score < 0.3:
+            return 'exit_immediately'
+        
+        # Exit if ML completely flipped with high confidence
+        if not prediction_aligned and health_score < 0.5:
+            return 'exit_soon'
+        
+        # Tighten stops in high volatility
+        if regime_info['regime'] == 'high_volatility' and regime_info['confidence'] > 0.7:
+            return 'tighten_stop'
+        
+        # Move stop to breakeven if profitable
+        if pnl_pct > 1.5:
+            return 'move_sl_breakeven'
+        
+        # Trail stop if very profitable
+        if pnl_pct > 5:
+            return 'trail_stop'
+        
+        # Adjust targets in trending market
+        if regime_info['regime'] in ['trending_up', 'trending_down'] and regime_info['confidence'] > 0.7:
+            return 'adjust_targets'
+        
+        return 'hold'
+    
+    def calculate_dynamic_levels(self, signal_data: Dict, df: pd.DataFrame, 
+                                  evaluation: Dict) -> Dict:
+        """Calculate new dynamic stop loss and take profit levels"""
+        try:
+            current_price = evaluation['current_price']
+            direction = signal_data['direction']
+            pnl_pct = evaluation['pnl_pct']
+            recommendation = evaluation['recommendation']
+            
+            # Current levels
+            current_sl = signal_data['stop_loss']
+            current_tp = signal_data['take_profit']
+            entry_price = signal_data['entry_price']
+            
+            new_sl = current_sl
+            new_tp = current_tp
+            
+            # Calculate ATR for dynamic adjustments
+            atr = talib.ATR(df['high'].values, df['low'].values, df['close'].values, 14)[-1]
+            
+            if recommendation == 'exit_immediately':
+                # Signal to exit, no new levels needed
+                return {'action': 'exit', 'reason': 'ML model invalidated signal'}
+            
+            elif recommendation == 'exit_soon':
+                # Tighten stop very close
+                if direction == 'LONG':
+                    new_sl = current_price * 0.995  # 0.5% stop
+                else:
+                    new_sl = current_price * 1.005
+                return {'action': 'update', 'new_sl': new_sl, 'new_tp': current_tp, 
+                        'reason': 'ML prediction reversed'}
+            
+            elif recommendation == 'tighten_stop':
+                # Tighten stop by 50% of distance
+                if direction == 'LONG':
+                    sl_distance = current_price - current_sl
+                    new_sl = current_price - (sl_distance * 0.5)
+                else:
+                    sl_distance = current_sl - current_price
+                    new_sl = current_price + (sl_distance * 0.5)
+                return {'action': 'update', 'new_sl': new_sl, 'new_tp': current_tp,
+                        'reason': 'High volatility detected'}
+            
+            elif recommendation == 'move_sl_breakeven':
+                # Move stop to breakeven + small profit
+                if direction == 'LONG':
+                    new_sl = entry_price * 1.002  # Breakeven + 0.2%
+                    new_sl = max(new_sl, current_sl)  # Never move stop against position
+                else:
+                    new_sl = entry_price * 0.998
+                    new_sl = min(new_sl, current_sl)
+                return {'action': 'update', 'new_sl': new_sl, 'new_tp': current_tp,
+                        'reason': 'Protecting profits at breakeven'}
+            
+            elif recommendation == 'trail_stop':
+                # Trail stop at 2x ATR
+                if direction == 'LONG':
+                    new_sl = current_price - (atr * 2)
+                    new_sl = max(new_sl, current_sl)  # Only move up
+                else:
+                    new_sl = current_price + (atr * 2)
+                    new_sl = min(new_sl, current_sl)  # Only move down
+                return {'action': 'update', 'new_sl': new_sl, 'new_tp': current_tp,
+                        'reason': 'Trailing stop for profits'}
+            
+            elif recommendation == 'adjust_targets':
+                # Extend targets in trending market
+                regime = evaluation['regime']
+                if (direction == 'LONG' and regime == 'trending_up') or \
+                   (direction == 'SHORT' and regime == 'trending_down'):
+                    # Extend take profit by 50%
+                    if direction == 'LONG':
+                        tp_distance = current_tp - entry_price
+                        new_tp = entry_price + (tp_distance * 1.5)
+                    else:
+                        tp_distance = entry_price - current_tp
+                        new_tp = entry_price - (tp_distance * 1.5)
+                return {'action': 'update', 'new_sl': new_sl, 'new_tp': new_tp,
+                        'reason': f'Favorable {regime} detected'}
+            
+            return {'action': 'hold', 'reason': 'No adjustment needed'}
+            
+        except Exception as e:
+            logger.error(f"Error calculating dynamic levels: {e}")
+            return {'action': 'hold', 'reason': 'Error in calculation'}
     
     async def _fetch_with_retry(self, symbol: str, timeframe: str, 
                             limit: int = 500, max_retries: int = 3) -> List:

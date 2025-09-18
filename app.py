@@ -42,6 +42,9 @@ class MLTradingBot:
         # Core ML components
         self.database = Database()
         self.analyzer = MLTradingAnalyzer(database=self.database)
+        self.enable_dynamic_exits = True
+        self.min_health_score_for_exit = 0.3
+        self.position_check_interval = 180  # seconds
         
         # FastAPI setup
         self.app = FastAPI(
@@ -165,6 +168,176 @@ class MLTradingBot:
             
         except Exception as e:
             logger.error(f"Error during ML bot initialization: {e}")
+
+    async def get_account_balance(self) -> Dict:
+        """Get real account balance from Bybit"""
+        try:
+            balance = self.analyzer.exchange.fetch_balance()
+            usdt_balance = balance['USDT']['free'] if 'USDT' in balance else 0
+            used_balance = balance['USDT']['used'] if 'USDT' in balance else 0
+            
+            return {
+                'free': usdt_balance,
+                'used': used_balance,
+                'total': usdt_balance + used_balance
+            }
+        except Exception as e:
+            logger.error(f"Error fetching balance: {e}")
+            return {'free': 0, 'used': 0, 'total': 0}
+    
+    async def execute_real_trade(self, signal_data: Dict) -> bool:
+        """Execute real trade on Bybit with 15% of balance and 15x leverage"""
+        try:
+            # Get current balance
+            balance_info = await self.get_account_balance()
+            available_balance = balance_info['free']
+            
+            if available_balance < 10:  # Minimum $10
+                logger.warning(f"Insufficient balance: ${available_balance}")
+                return False
+            
+            # Calculate position size (15% of available balance with 15x leverage)
+            account_equity = available_balance * 0.15  # Use 15% of available balance
+            leverage = 15
+            position_value = account_equity * leverage
+            
+            # Get current market price
+            ticker = self.analyzer.exchange.fetch_ticker(signal_data['coin'] + '/USDT:USDT')
+            current_price = ticker['last']
+            
+            # Calculate quantity
+            symbol_info = self.analyzer.exchange.market(signal_data['coin'] + '/USDT:USDT')
+            min_qty = symbol_info['limits']['amount']['min']
+            qty_precision = symbol_info['precision']['amount']
+            
+            quantity = position_value / current_price
+            quantity = round(quantity, qty_precision)
+            quantity = max(quantity, min_qty)
+            
+            # Set leverage for the symbol
+            try:
+                self.analyzer.exchange.set_leverage(leverage, signal_data['coin'] + '/USDT:USDT')
+            except:
+                pass  # Some symbols might have fixed leverage
+            
+            # Place market order for immediate execution
+            side = 'buy' if signal_data['direction'] == 'LONG' else 'sell'
+            
+            order = self.analyzer.exchange.create_order(
+                symbol=signal_data['coin'] + '/USDT:USDT',
+                type='market',
+                side=side,
+                amount=quantity,
+                params={
+                    'positionIdx': 0,  # One-way mode
+                    'timeInForce': 'IOC'
+                }
+            )
+            
+            if order and order['status'] in ['closed', 'filled']:
+                # Set stop loss and take profit
+                await self.set_sl_tp_orders(
+                    signal_data['coin'] + '/USDT:USDT',
+                    signal_data['direction'],
+                    quantity,
+                    signal_data['stop_loss'],
+                    signal_data['take_profit']
+                )
+                
+                logger.info(f"REAL TRADE EXECUTED: {signal_data['coin']} {side} "
+                           f"Qty: {quantity}, Value: ${position_value:.2f}, "
+                           f"Leverage: {leverage}x, Account Risk: 15%")
+                
+                # Update signal with real order info
+                signal_data['order_id'] = order['id']
+                signal_data['executed_price'] = order['average'] if order.get('average') else current_price
+                signal_data['executed_quantity'] = quantity
+                signal_data['position_value'] = position_value
+                
+                return True
+            else:
+                logger.error(f"Order failed: {order}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Real trade execution failed: {e}")
+            return False
+    
+    async def set_sl_tp_orders(self, symbol: str, direction: str, quantity: float, 
+                               stop_loss: float, take_profit: float) -> bool:
+        """Set stop loss and take profit orders on Bybit"""
+        try:
+            # Stop Loss Order
+            sl_side = 'sell' if direction == 'LONG' else 'buy'
+            sl_order = self.analyzer.exchange.create_order(
+                symbol=symbol,
+                type='stop',
+                side=sl_side,
+                amount=quantity,
+                stopPrice=stop_loss,
+                params={
+                    'positionIdx': 0,
+                    'triggerPrice': stop_loss,
+                    'triggerBy': 'LastPrice',
+                    'closeOnTrigger': True
+                }
+            )
+            
+            # Take Profit Order
+            tp_side = 'sell' if direction == 'LONG' else 'buy'
+            tp_order = self.analyzer.exchange.create_order(
+                symbol=symbol,
+                type='take_profit',
+                side=tp_side,
+                amount=quantity,
+                stopPrice=take_profit,
+                params={
+                    'positionIdx': 0,
+                    'triggerPrice': take_profit,
+                    'triggerBy': 'LastPrice',
+                    'closeOnTrigger': True
+                }
+            )
+            
+            logger.info(f"SL/TP set - SL: {stop_loss}, TP: {take_profit}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to set SL/TP: {e}")
+            return False
+    
+    async def close_real_position(self, signal_data: Dict, reason: str) -> bool:
+        """Close real position on Bybit"""
+        try:
+            symbol = signal_data['coin'] + '/USDT:USDT'
+            
+            # Get current position
+            positions = self.analyzer.exchange.fetch_positions([symbol])
+            position = next((p for p in positions if p['symbol'] == symbol), None)
+            
+            if not position or position['contracts'] == 0:
+                logger.warning(f"No open position for {symbol}")
+                return False
+            
+            # Close position with market order
+            side = 'sell' if position['side'] == 'long' else 'buy'
+            close_order = self.analyzer.exchange.create_order(
+                symbol=symbol,
+                type='market',
+                side=side,
+                amount=abs(position['contracts']),
+                params={
+                    'positionIdx': 0,
+                    'reduceOnly': True
+                }
+            )
+            
+            logger.info(f"REAL POSITION CLOSED: {symbol} - Reason: {reason}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to close real position: {e}")
+            return False
 
     def initialize_ml_tracking(self):
         """Initialize ML-specific performance tracking"""
@@ -523,6 +696,28 @@ class MLTradingBot:
             """Get enhanced ML portfolio statistics"""
             try:
                 portfolio = self.database.get_portfolio_stats()
+        
+                # ADD: Fetch real Bybit balance
+                real_balance = await self.get_account_balance()
+                portfolio['real_balance'] = real_balance['total']
+                portfolio['available_balance'] = real_balance['free']
+                portfolio['used_balance'] = real_balance['used']
+        
+                # Calculate real open P&L from Bybit positions
+                active_signals = self.database.get_active_signals()
+                total_open_pnl = 0
+        
+                for signal in active_signals:
+                    try:
+                        positions = self.analyzer.exchange.fetch_positions([signal['coin'] + '/USDT:USDT'])
+                        for pos in positions:
+                            if pos['contracts'] > 0:
+                                total_open_pnl += pos['unrealizedPnl'] or 0
+                    except:
+                        pass
+        
+                portfolio['real_open_pnl'] = total_open_pnl
+                portfolio['total_balance'] = real_balance['total'] + total_open_pnl
                 
                 # Add ML-specific metrics
                 portfolio['ml_metrics'] = {
@@ -809,6 +1004,8 @@ class MLTradingBot:
                     
                     # Check signal exits first
                     await self.check_signal_exits()
+
+                    await self.evaluate_and_adjust_positions()
                     
                     # ML signal generation
                     active_signals = self.database.get_active_signals()
@@ -833,15 +1030,26 @@ class MLTradingBot:
                                 if not self.validate_ml_signal_before_save(signal_data):
                                     continue
                                 
-                                # Save ML signal
-                                success = self.database.save_signal(signal_data)
-                                if success:
-                                    new_signals_count += 1
-                                    self.active_coins.add(signal_data['coin'])
-                                    self.active_signals.add(signal_data['signal_id'])
+                                
+                                # Execute REAL trade
+                                trade_executed = await self.execute_real_trade(signal_data)
+                                
+                                if trade_executed:
+                                    # Save to database for tracking
+                                    success = self.database.save_signal(signal_data)
+                                    if success:
+                                        new_signals_count += 1
+                                        self.active_coins.add(signal_data['coin'])
+                                        self.active_signals.add(signal_data['signal_id'])
                                     
-                                    # Update ML tracking
+                                    logger.warning(f"💰 REAL MONEY TRADE: {signal_data['coin']} "
+                                                 f"{signal_data['direction']} at {signal_data['entry_price']}")
+                                else:
+                                    logger.error(f"Failed to execute real trade for {signal_data['coin']}")
                                     self.update_ml_signal_tracking(signal_data)
+                                    continue                                 
+                                    
+                                    
                                     
                                     # Grace period
                                     asyncio.create_task(
@@ -1100,6 +1308,8 @@ class MLTradingBot:
                     
                     # Execute exit
                     if exit_reason and exit_price:
+                        real_close_success = await self.close_real_position(signal, exit_reason)
+
                         success = self.database.close_signal(signal['signal_id'], exit_price, exit_reason)
                         
                         if success:
@@ -1141,6 +1351,116 @@ class MLTradingBot:
         except Exception as e:
             logger.error(f"Error in ML signal exit check: {e}")
 
+    async def evaluate_and_adjust_positions(self):
+        """Re-evaluate all active positions and adjust dynamically"""
+        
+        try:
+            active_signals = self.database.get_active_signals()
+            
+            if not active_signals:
+                return
+            
+            logger.info(f"Re-evaluating {len(active_signals)} active positions")
+            
+            for signal in active_signals:
+                try:
+                    coin = signal['coin']
+                    symbol = f"{coin}/USDT"
+                    
+                    # Get fresh market data
+                    df = await self.analyzer.get_market_data(symbol, '1h', 100)
+                    if df.empty:
+                        continue
+                    
+                    # Evaluate position health
+                    evaluation = self.analyzer.evaluate_position_health(signal, df)
+                    
+                    # Skip if health is good
+                    if evaluation['health_score'] > 0.7 and evaluation['recommendation'] == 'hold':
+                        continue
+                    
+                    # Calculate dynamic adjustments
+                    adjustment = self.analyzer.calculate_dynamic_levels(signal, df, evaluation)
+                    
+                    # Execute adjustment
+                    if adjustment['action'] == 'exit':
+                        # Close position immediately
+                        await self.close_real_position(signal, adjustment['reason'])
+                        current_price = evaluation['current_price']
+                        success = self.database.close_signal(
+                            signal['signal_id'], 
+                            current_price,
+                            f"Dynamic Exit: {adjustment['reason']}"
+                        )
+                        
+                        if success:
+                            self.active_signals.discard(signal['signal_id'])
+                            self.active_coins.discard(coin)
+                            
+                            # Calculate P&L for logging
+                            if signal['direction'] == 'LONG':
+                                pnl_pct = ((current_price - signal['entry_price']) / signal['entry_price']) * 100 * 10
+                            else:
+                                pnl_pct = ((signal['entry_price'] - current_price) / signal['entry_price']) * 100 * 10
+                            
+                            await self.broadcast_to_clients({
+                                "type": "position_adjusted",
+                                "action": "emergency_exit",
+                                "signal_id": signal['signal_id'],
+                                "coin": coin,
+                                "reason": adjustment['reason'],
+                                "pnl_pct": round(pnl_pct, 2),
+                                "health_score": round(evaluation['health_score'], 2)
+                            })
+                            
+                            logger.warning(f"Emergency exit {coin}: {adjustment['reason']} "
+                                          f"(Health: {evaluation['health_score']:.2f}, P&L: {pnl_pct:.2f}%)")
+                    
+                    elif adjustment['action'] == 'update':
+                        # Update stop loss and/or take profit
+                        new_sl = adjustment.get('new_sl')
+                        new_tp = adjustment.get('new_tp')
+                        
+                        # Only update if levels actually changed meaningfully (>0.1% difference)
+                        sl_changed = abs(new_sl - signal['stop_loss']) / signal['stop_loss'] > 0.001
+                        tp_changed = abs(new_tp - signal['take_profit']) / signal['take_profit'] > 0.001
+                        
+                        if sl_changed or tp_changed:
+                            # Update in database
+                            with self.database.get_db_connection() as conn:
+                                cursor = conn.cursor()
+                                cursor.execute('''
+                                UPDATE signals 
+                                SET stop_loss = ?, take_profit = ?, updated_at = CURRENT_TIMESTAMP
+                                WHERE signal_id = ? AND status = 'active'
+                                ''', (new_sl, new_tp, signal['signal_id']))
+                            
+                            await self.broadcast_to_clients({
+                                "type": "position_adjusted",
+                                "action": "levels_updated",
+                                "signal_id": signal['signal_id'],
+                                "coin": coin,
+                                "old_sl": signal['stop_loss'],
+                                "new_sl": new_sl,
+                                "old_tp": signal['take_profit'],
+                                "new_tp": new_tp,
+                                "reason": adjustment['reason'],
+                                "health_score": round(evaluation['health_score'], 2)
+                            })
+                            
+                            logger.info(f"Adjusted {coin} levels: SL {signal['stop_loss']:.6f} -> {new_sl:.6f}, "
+                                       f"TP {signal['take_profit']:.6f} -> {new_tp:.6f} ({adjustment['reason']})")
+                    
+                    # Small delay between evaluations
+                    await asyncio.sleep(0.5)
+                    
+                except Exception as e:
+                    logger.error(f"Error evaluating position {signal['signal_id']}: {e}")
+                    continue
+            
+        except Exception as e:
+            logger.error(f"Error in position evaluation cycle: {e}")
+
     def update_ml_prediction_accuracy(self, signal: Dict, was_successful: bool):
         """Update ML prediction accuracy tracking"""
         try:
@@ -1164,6 +1484,26 @@ class MLTradingBot:
         """Remove signal from grace period"""
         await asyncio.sleep(delay)
         self.active_signals.discard(signal_id)
+
+    async def position_monitoring_cycle(self):
+        """Dedicated cycle for monitoring and adjusting active positions"""
+        monitor_interval = 180  # Check every 3 minutes
+        
+        while self.running:
+            try:
+                await asyncio.sleep(monitor_interval)
+                
+                if not self.running:
+                    break
+                
+                # Only run if we have active positions and not currently scanning
+                active_signals = self.database.get_active_signals()
+                if active_signals and not self.is_scanning:
+                    logger.info("Running position health check...")
+                    await self.evaluate_and_adjust_positions()
+                    
+            except Exception as e:
+                logger.error(f"Error in position monitoring cycle: {e}")
 
     def get_ml_enhanced_dashboard(self) -> str:
         """Return ML-enhanced dashboard HTML"""
@@ -1862,6 +2202,7 @@ async def startup_event():
         bot.running = True
         asyncio.create_task(bot.ml_scan_cycle())
         asyncio.create_task(bot.ml_retrain_cycle())
+        asyncio.create_task(bot.position_monitoring_cycle())
         logger.info("ML trading bot auto-started with advanced features")
 
 @app.on_event("shutdown")

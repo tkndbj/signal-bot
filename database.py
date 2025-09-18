@@ -106,6 +106,23 @@ class MLEnhancedDatabase:
                 exit_reason TEXT
             )
             ''')
+
+            # In database.py, add a table for position adjustments
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS position_adjustments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                signal_id TEXT NOT NULL,
+                adjustment_type TEXT NOT NULL,
+                old_sl REAL,
+                new_sl REAL,
+                old_tp REAL,
+                new_tp REAL,
+                reason TEXT,
+                health_score REAL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (signal_id) REFERENCES signals (signal_id)
+            )
+            ''')
             
             # ML Models tracking table
             cursor.execute('''

@@ -1430,7 +1430,8 @@
       }
 
       function updatePortfolioStats(portfolio) {
-        const balance = portfolio.total_balance || 1000;
+        const balance = portfolio.real_balance || portfolio.total_balance || 1000;
+        const openPnl = portfolio.real_open_pnl || portfolio.open_pnl || 0;
         const totalPnl = portfolio.total_pnl || 0;
         const totalTrades = portfolio.total_trades || 0;
         const winningTrades = portfolio.winning_trades || 0;
