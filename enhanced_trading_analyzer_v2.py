@@ -139,13 +139,12 @@ class MLTradingAnalyzer:
                 }
             })
         
-        exchange.load_markets()
-        logger.info("Bybit exchange connected for REAL TRADING")
-        return exchange
+            exchange.load_markets()
+            logger.info("Bybit exchange connected for REAL TRADING")
+            return exchange
         
-    except Exception as e:
-        logger.error(f"Failed to initialize Bybit: {e}")
-        raise Exception("Cannot proceed without exchange connection")           
+        except Exception as e:
+            logger.error(f"Failed to initialize Bybit: {e}")              
         
     
     async def get_market_data(self, symbol: str, timeframe: str = '1h', 
