@@ -197,22 +197,12 @@ class MLTradingBot:
         except Exception as e:
             logger.error(f"Error fetching balance: {e}")
             return {'free': 0, 'used': 0, 'total': 0}
-
-    def validate_symbol(self, coin: str) -> bool:
-        try:
-            symbol = coin  # Already in SYMBOLUSDT format
-            return symbol in self.analyzer.markets  # Use cached markets
-        except Exception as e:
-            logger.error(f"Error validating symbol {coin}: {e}")
-            return False
+    
     
     async def execute_real_trade(self, signal_data: Dict) -> bool:
         """Execute real trade on Bybit with 15% of balance and 15x leverage"""
         try:
-            logger.info(f"Processing coin: {signal_data['coin']}")
-            if not self.validate_symbol(signal_data['coin']):
-                logger.error(f"Invalid symbol: {signal_data['coin']}")
-                return False
+            logger.info(f"Processing coin: {signal_data['coin']}")            
 
             symbol = signal_data['coin']
             logger.info(f"Constructed symbol: {symbol}")
@@ -1399,12 +1389,7 @@ class MLTradingBot:
             
             for signal in active_signals:
                 try:
-                    symbol = signal['coin']
-
-                    # Validate symbol
-                    if not self.validate_symbol(signal['coin']):
-                        logger.error(f"Invalid symbol: {signal['coin']}")
-                        continue
+                    symbol = signal['coin']                    
                     
                     # Get fresh market data
                     df = await self.analyzer.get_market_data(symbol, '1h', 100)
