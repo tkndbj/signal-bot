@@ -141,11 +141,15 @@ class MLTradingAnalyzer:
         
             exchange.load_markets()
             logger.info("Bybit exchange connected for REAL TRADING")
-            return exchange
-        
+            return exchange   
+            
         except Exception as e:
-            logger.error(f"Failed to initialize Bybit: {e}")              
-        
+            logger.error(f"Failed to initialize exchange: {e}")
+            return ccxt.binance({
+                'rateLimit': 1000,
+                'enableRateLimit': True,
+                'timeout': 15000
+            })
     
     async def get_market_data(self, symbol: str, timeframe: str = '1h', 
                             limit: int = 500) -> pd.DataFrame:
