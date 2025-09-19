@@ -275,8 +275,35 @@ class MLTradingBot:
                     'timeInForce': 'IOC'
                 }
             )
-            
-            if order and order['status'] in ['closed', 'filled']:
+
+            # Wait a moment for order to process
+            await asyncio.sleep(1)
+
+            # Fetch order status if initial response is incomplete
+            if order and order.get('id'):
+                try:
+                    # Fetch the actual order status
+                    order_status = self.analyzer.exchange.fetch_order(order['id'], signal_data['coin'])
+                    if order_status:
+                        order = order_status
+                except Exception as e:
+                    logger.warning(f"Could not fetch order status: {e}")
+
+            # Check various status fields since response format may vary
+            order_filled = False
+            if order:
+                status = order.get('status')
+                filled = order.get('filled', 0)
+                info = order.get('info', {})
+    
+                # Check multiple conditions for success
+                if (status in ['closed', 'filled'] or 
+                    filled > 0 or 
+                (info and info.get('orderId'))):
+                    order_filled = True
+                    logger.info(f"Order details: status={status}, filled={filled}, id={order.get('id')}")
+
+            if order_filled:
                 # Set stop loss and take profit
                 await self.set_sl_tp_orders(
                     signal_data['coin'],
