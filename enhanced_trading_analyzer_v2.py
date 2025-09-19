@@ -1255,7 +1255,7 @@ class MLTradingAnalyzer:
             stop_pct = min(stop_pct, self.max_risk_per_trade / 100)
         
             # Ensure minimum price difference based on tick size
-            min_price_diff = max(current_price * 0.01, tick_size * 5)  # At least 1% or 5x tick size
+            min_price_diff = max(current_price * 0.005, tick_size * 10)
         
             if direction == 'LONG':
                 stop_loss = current_price * (1 - stop_pct)
