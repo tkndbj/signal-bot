@@ -229,12 +229,17 @@ class MLTradingBot:
             
             # Calculate quantity
             symbol_info = self.analyzer.exchange.market(signal_data['coin'])
-            min_qty = symbol_info['limits']['amount']['min']
-            qty_precision = symbol_info['precision']['amount']  # e.g., 0 for int
+            min_qty = float(symbol_info['limits']['amount']['min']) if symbol_info['limits']['amount']['min'] else 0.001
+            qty_precision = symbol_info['precision']['amount'] if symbol_info else 8
 
             quantity = position_value / current_price
+
+            # Handle precision properly
+            if isinstance(qty_precision, str):
+                qty_precision = int(qty_precision) if qty_precision.isdigit() else 8
+    
             if qty_precision == 0:
-                quantity = int(quantity)  # Force int if precision 0
+                quantity = int(quantity) 
             else:
                 quantity = self.analyzer.exchange.amount_to_precision(symbol, quantity)
             quantity = max(quantity, min_qty)
