@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Set
 import signal
 import sys
 import numpy as np
-
+import math
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -249,15 +249,24 @@ class MLTradingBot:
             logger.info(f"Base quantity calculation: ${position_value} / ${current_price} = {base_quantity}")
 
             # Apply precision rules BEFORE min_qty check
+            base_ceil = math.ceil(base_quantity * (10 ** qty_precision)) / (10 ** qty_precision)
             if qty_precision == 0:
-                quantity = max(int(base_quantity), 1)  # Ensure at least 1 for integer precision
+                quantity = max(int(base_ceil), 1)
             else:
-                quantity = round(base_quantity, qty_precision)
+                quantity = round(base_ceil, qty_precision)
 
             # Ensure minimum quantity is met
             if quantity < min_qty:
                 quantity = min_qty
                 logger.info(f"Adjusted to minimum quantity: {quantity}")
+
+            # Final check/adjust to meet 95% target if possible
+            final_value = quantity * current_price
+            if final_value < position_value * 0.95:
+                step_size = 10 ** -qty_precision
+                quantity = math.ceil(quantity / step_size) * step_size
+                final_value = quantity * current_price
+                logger.info(f"Ceiled quantity to meet target: {quantity}")
 
             # Verify final position value
             final_position_value = quantity * current_price
@@ -285,7 +294,7 @@ class MLTradingBot:
             )
 
             # Wait a moment for order to process
-            await asyncio.sleep(1)
+            await asyncio.sleep(3)
 
             # Fetch order status if initial response is incomplete
             if order and order.get('id'):
@@ -320,6 +329,8 @@ class MLTradingBot:
                     signal_data['stop_loss'],
                     signal_data['take_profit']
                 )
+                if not sl_tp_success:
+                    logger.error(f"Failed to set SL/TP for {signal_data['coin']}")
                 
                 logger.info(f"REAL TRADE EXECUTED: {signal_data['coin']} {side} "
                            f"Qty: {quantity}, Value: ${position_value:.2f}, "
@@ -345,7 +356,7 @@ class MLTradingBot:
         """Set stop loss and take profit orders on Bybit"""
         try:
             # Get current position to determine position side
-            positions = self.analyzer.exchange.fetch_positions([symbol])
+            positions = self.analyzer.exchange.fetch_positions([symbol], params={'category': 'linear'})
             position = next((p for p in positions if p['symbol'] == symbol and p['contracts'] > 0), None)
         
             if not position:
@@ -405,7 +416,7 @@ class MLTradingBot:
             symbol = signal_data['coin']
             
             # Get current position
-            positions = self.analyzer.exchange.fetch_positions([symbol])
+            positions = self.analyzer.exchange.fetch_positions([symbol], params={'category': 'linear'})
             position = next((p for p in positions if p['symbol'] == symbol), None)
             
             if not position or position['contracts'] == 0:
