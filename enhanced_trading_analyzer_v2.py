@@ -1255,7 +1255,15 @@ class MLTradingAnalyzer:
             stop_pct = min(stop_pct, self.max_risk_per_trade / 100)
         
             # Ensure minimum price difference based on tick size
-            min_price_diff = max(current_price * 0.005, tick_size * 10)
+            if current_price > 100:  # High-value coins like TAOUSDT
+                min_price_diff = current_price * 0.003  # 0.3%
+            elif current_price > 1:  # Mid-value coins like SUIUSDT
+                min_price_diff = current_price * 0.004  # 0.4%
+            else:  # Low-value coins like LINEAUSDT
+                min_price_diff = current_price * 0.006  # 0.6%
+
+            # Ensure it's at least 10 ticks
+            min_price_diff = max(min_price_diff, tick_size * 10)
         
             if direction == 'LONG':
                 stop_loss = current_price * (1 - stop_pct)
@@ -1268,18 +1276,22 @@ class MLTradingAnalyzer:
                 min_tp = current_price - min_price_diff
                 take_profit = min(min_tp, predicted_tp)
         
-            current_price = self.exchange.price_to_precision(symbol, current_price)
-            stop_loss = self.exchange.price_to_precision(symbol, stop_loss)
-            take_profit = self.exchange.price_to_precision(symbol, take_profit)
-
-            # Check for None values from price_to_precision
-            if None in (current_price, stop_loss, take_profit):
-                logger.error(f"Invalid price precision for {symbol}: Current={current_price}, SL={stop_loss}, TP={take_profit}")
+            try:
+                precise_current = self.exchange.price_to_precision(symbol, current_price)
+                precise_sl = self.exchange.price_to_precision(symbol, stop_loss)
+                precise_tp = self.exchange.price_to_precision(symbol, take_profit)
+    
+                if None in (precise_current, precise_sl, precise_tp):
+                    logger.error(f"Price precision failed for {symbol}: Current={precise_current}, SL={precise_sl}, TP={precise_tp}")
+                    return None
+        
+                current_price = float(precise_current)
+                stop_loss = float(precise_sl)
+                take_profit = float(precise_tp)
+    
+            except Exception as e:
+                logger.error(f"Price precision error for {symbol}: {e}")
                 return None
-
-            current_price = float(current_price)
-            stop_loss = float(stop_loss)
-            take_profit = float(take_profit)
         
             # Validate prices
             if stop_loss <= 0 or take_profit <= 0 or stop_loss < min_price or take_profit < min_price:
@@ -1288,18 +1300,25 @@ class MLTradingAnalyzer:
         
             # Validate price differences
             if direction == 'LONG':
+                sl_diff = abs(current_price - stop_loss)
+                tp_diff = abs(take_profit - current_price)
+            else:
+                sl_diff = abs(stop_loss - current_price) 
+                tp_diff = abs(current_price - take_profit)
+
+            # Check minimum differences
+            if sl_diff < min_price_diff or tp_diff < min_price_diff:
+                logger.warning(f"Price difference too small for {symbol}: SL_diff={sl_diff:.6f}, TP_diff={tp_diff:.6f}, min_diff={min_price_diff:.6f}")
+                return None
+
+            # Validate price order based on direction
+            if direction == 'LONG':
                 if not (stop_loss < current_price < take_profit):
                     logger.error(f"Invalid LONG price order for {symbol}: SL={stop_loss}, Entry={current_price}, TP={take_profit}")
-                    return None
-                if (current_price - stop_loss) < min_price_diff or (take_profit - current_price) < min_price_diff:
-                    logger.error(f"Price difference too small for {symbol}: SL={stop_loss}, Entry={current_price}, TP={take_profit}, min_diff={min_price_diff}")
                     return None
             else:
                 if not (take_profit < current_price < stop_loss):
                     logger.error(f"Invalid SHORT price order for {symbol}: TP={take_profit}, Entry={current_price}, SL={stop_loss}")
-                    return None
-                if (stop_loss - current_price) < min_price_diff or (current_price - take_profit) < min_price_diff:
-                    logger.error(f"Price difference too small for {symbol}: SL={stop_loss}, Entry={current_price}, TP={take_profit}, min_diff={min_price_diff}")
                     return None
         
             # Calculate final metrics
