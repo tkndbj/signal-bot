@@ -213,6 +213,7 @@ class MLTradingBot:
             # Get current balance
             balance_info = await self.get_account_balance()
             available_balance = balance_info['free']
+            logger.info(f"Account balance: ${available_balance}, Using 15%: ${available_balance * 0.15}")
             
             if available_balance < 10:  # Minimum $10
                 logger.warning(f"Insufficient balance: ${available_balance}")
@@ -244,17 +245,22 @@ class MLTradingBot:
                 qty_precision = 8
 
             quantity = position_value / current_price
+            logger.info(f"Calculated quantity: {quantity} (position_value: ${position_value}, price: ${current_price})")
 
             # Handle precision properly
             if qty_precision == 0:
                 quantity = int(quantity)
             else:
+                # Store original quantity for comparison
+                original_qty = quantity
                 quantity = self.analyzer.exchange.amount_to_precision(symbol, quantity)
                 # CRITICAL: Ensure quantity is float after precision conversion
                 quantity = float(quantity) if isinstance(quantity, str) else quantity
+                logger.info(f"After precision adjustment: {original_qty} -> {quantity} (precision: {qty_precision})")
 
             # Now both are guaranteed to be numeric types
             quantity = max(quantity, min_qty)
+            logger.info(f"Final quantity: {quantity} (min_qty: {min_qty})")
             
             # Set leverage for the symbol
             try:
@@ -343,28 +349,30 @@ class MLTradingBot:
                 type='stop',
                 side=sl_side,
                 amount=quantity,
-                stopPrice=stop_loss,
                 params={
                     'positionIdx': 0,
+                    'stopPrice': stop_loss,  # Move stopPrice to params
                     'triggerPrice': stop_loss,
                     'triggerBy': 'LastPrice',
-                    'closeOnTrigger': True
+                    'closeOnTrigger': True,
+                    'reduceOnly': True
                 }
             )
-            
-            # Take Profit Order
+
+            # Take Profit Order  
             tp_side = 'sell' if direction == 'LONG' else 'buy'
             tp_order = self.analyzer.exchange.create_order(
                 symbol=symbol,
-                type='take_profit',
+                type='limit',  # Use limit instead of take_profit
                 side=tp_side,
                 amount=quantity,
-                stopPrice=take_profit,
+                price=take_profit,  # Use price for limit orders
                 params={
                     'positionIdx': 0,
                     'triggerPrice': take_profit,
                     'triggerBy': 'LastPrice',
-                    'closeOnTrigger': True
+                    'closeOnTrigger': True,
+                    'reduceOnly': True
                 }
             )
             
@@ -619,7 +627,8 @@ class MLTradingBot:
                 
                 for signal in signals:
                     try:
-                        symbol = signal['coin'].replace('/USDT', '') + 'USDT'
+                        coin = signal['coin'].replace('/USDT', '').replace('USDT', '')
+                        symbol = f"{coin}USDT"
                         current_price = await self.analyzer.get_current_price(symbol)
                         
                         if current_price > 0:
