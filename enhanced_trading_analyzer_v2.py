@@ -1268,10 +1268,18 @@ class MLTradingAnalyzer:
                 min_tp = current_price - min_price_diff
                 take_profit = min(min_tp, predicted_tp)
         
-            # Align prices with Bybit's tick size
-            current_price = float(self.exchange.price_to_precision(symbol, current_price))
-            stop_loss = float(self.exchange.price_to_precision(symbol, stop_loss))
-            take_profit = float(self.exchange.price_to_precision(symbol, take_profit))
+            current_price = self.exchange.price_to_precision(symbol, current_price)
+            stop_loss = self.exchange.price_to_precision(symbol, stop_loss)
+            take_profit = self.exchange.price_to_precision(symbol, take_profit)
+
+            # Check for None values from price_to_precision
+            if None in (current_price, stop_loss, take_profit):
+                logger.error(f"Invalid price precision for {symbol}: Current={current_price}, SL={stop_loss}, TP={take_profit}")
+                return None
+
+            current_price = float(current_price)
+            stop_loss = float(stop_loss)
+            take_profit = float(take_profit)
         
             # Validate prices
             if stop_loss <= 0 or take_profit <= 0 or stop_loss < min_price or take_profit < min_price:
