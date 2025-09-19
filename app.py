@@ -227,21 +227,33 @@ class MLTradingBot:
             ticker = self.analyzer.exchange.fetch_ticker(signal_data['coin'])
             current_price = ticker['last']
             
-            # Calculate quantity
             symbol_info = self.analyzer.exchange.market(signal_data['coin'])
-            min_qty = float(symbol_info['limits']['amount']['min']) if symbol_info['limits']['amount']['min'] else 0.001
-            qty_precision = symbol_info['precision']['amount'] if symbol_info else 8
+
+            # Ensure min_qty is ALWAYS a float
+            min_qty = symbol_info.get('limits', {}).get('amount', {}).get('min')
+            if min_qty is not None:
+                min_qty = float(min_qty)
+            else:
+                min_qty = 0.001
+
+            # Ensure qty_precision is ALWAYS an int
+            qty_precision = symbol_info.get('precision', {}).get('amount')
+            if qty_precision is not None:
+                qty_precision = int(qty_precision) if isinstance(qty_precision, (str, float)) else qty_precision
+            else:
+                qty_precision = 8
 
             quantity = position_value / current_price
 
             # Handle precision properly
-            if isinstance(qty_precision, str):
-                qty_precision = int(qty_precision) if qty_precision.isdigit() else 8
-    
             if qty_precision == 0:
-                quantity = int(quantity) 
+                quantity = int(quantity)
             else:
                 quantity = self.analyzer.exchange.amount_to_precision(symbol, quantity)
+                # CRITICAL: Ensure quantity is float after precision conversion
+                quantity = float(quantity) if isinstance(quantity, str) else quantity
+
+            # Now both are guaranteed to be numeric types
             quantity = max(quantity, min_qty)
             
             # Set leverage for the symbol
