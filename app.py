@@ -251,14 +251,11 @@ class MLTradingBot:
             if qty_precision == 0:
                 quantity = int(quantity)
             else:
-                # Store original quantity for comparison
-                original_qty = quantity
-                quantity = self.analyzer.exchange.amount_to_precision(symbol, quantity)
-                # CRITICAL: Ensure quantity is float after precision conversion
-                quantity = float(quantity) if isinstance(quantity, str) else quantity
-                logger.info(f"After precision adjustment: {original_qty} -> {quantity} (precision: {qty_precision})")
+                quantity = round(quantity, qty_precision)
+                logger.info(f"After round: quantity={quantity}, type={type(quantity)}")
 
-            # Now both are guaranteed to be numeric types
+            # Before max comparison
+            logger.info(f"Before max: quantity={quantity}, min_qty={min_qty}")
             quantity = max(quantity, min_qty)
             logger.info(f"Final quantity: {quantity} (min_qty: {min_qty})")
             
@@ -353,6 +350,7 @@ class MLTradingBot:
                     'positionIdx': 0,
                     'stopPrice': stop_loss,  # Move stopPrice to params
                     'triggerPrice': stop_loss,
+                    'triggerDirection': 'below' if direction == 'LONG' else 'above',
                     'triggerBy': 'LastPrice',
                     'closeOnTrigger': True,
                     'reduceOnly': True
@@ -370,6 +368,7 @@ class MLTradingBot:
                 params={
                     'positionIdx': 0,
                     'triggerPrice': take_profit,
+                    'triggerDirection': 'above' if direction == 'LONG' else 'below',
                     'triggerBy': 'LastPrice',
                     'closeOnTrigger': True,
                     'reduceOnly': True
