@@ -435,25 +435,28 @@ class MLTradingBot:
     def validate_signal_before_save(self, signal_data: Dict) -> bool:
         try:
             signal_data['coin'] = signal_data['coin'].replace('/USDT', '')
-            # Check required fields
             required_fields = ['signal_id', 'coin', 'direction', 'entry_price', 'take_profit', 'stop_loss']
             for field in required_fields:
                 if field not in signal_data:
                     logger.error(f"Missing required field: {field}")
                     return False
-    
-            # Check price logic
-            entry = round(signal_data['entry_price'], 8)
-            tp = round(signal_data['take_profit'], 8)
-            sl = round(signal_data['stop_loss'], 8)
+
+            entry = float(signal_data['entry_price'])
+            tp = float(signal_data['take_profit'])
+            sl = float(signal_data['stop_loss'])
             direction = signal_data['direction']
-    
-            # Ensure minimum price difference
-            min_price_diff = max(entry * 0.01, 0.001)
+
+            # Reject negative or zero prices
+            if entry <= 0 or tp <= 0 or sl <= 0:
+                logger.error(f"Invalid price (negative or zero): SL={sl}, Entry={entry}, TP={tp}")
+                return False
+
+            # Dynamic minimum price difference
+            min_price_diff = max(entry * 0.02, 0.0001)  # Increased to 2% or 0.0001
             if abs(entry - sl) < min_price_diff or abs(tp - entry) < min_price_diff:
                 logger.error(f"Price difference too small: SL={sl}, Entry={entry}, TP={tp}, signal_data: {signal_data}")
                 return False
-    
+
             if direction == 'LONG':
                 if not (sl < entry < tp):
                     logger.error(f"Invalid LONG signal prices: SL={sl}, Entry={entry}, TP={tp}")
@@ -462,17 +465,15 @@ class MLTradingBot:
                 if not (tp < entry < sl):
                     logger.error(f"Invalid SHORT signal prices: TP={tp}, Entry={entry}, SL={sl}")
                     return False
-    
-            # Check if coin already active
+
             active_signals = self.database.get_active_signals()
             active_coins = {signal['coin'] for signal in active_signals}
-    
             if signal_data['coin'] in active_coins:
                 logger.warning(f"Coin {signal_data['coin']} already has active signal")
                 return False
-    
+
             return True
-    
+
         except Exception as e:
             logger.error(f"Error validating signal: {e}")
             return False
