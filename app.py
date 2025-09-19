@@ -127,9 +127,13 @@ class MLTradingBot:
     def initialize_ml_bot_state(self):
         """Initialize ML bot state with enhanced cleanup"""
         try:
+            # First, sync with exchange to clean up any stale signals
+            logger.info("Initializing ML bot state and syncing with exchange...")
+            
             # Standard cleanup
             active_signals = self.database.get_active_signals()
-            self.active_coins = {signal['coin'] for signal in active_signals}
+            self.active_coins = set()
+            self.active_signals = set()
             
             # Clean stale signals
             stale_signals = []
@@ -154,7 +158,13 @@ class MLTradingBot:
             if stale_signals:
                 logger.info(f"ML cleanup: Removed {len(stale_signals)} stale signals")
 
-            asyncio.create_task(self.sync_bybit_positions_on_startup())
+            # Schedule immediate sync with exchange
+            async def delayed_sync():
+                await self.sync_bybit_positions_on_startup()
+                await asyncio.sleep(2)  # Small delay
+                await self.sync_active_positions_with_exchange()
+
+            asyncio.create_task(delayed_sync())
             
             # Initialize ML-specific tracking
             self.initialize_ml_tracking()
@@ -232,6 +242,93 @@ class MLTradingBot:
                     
         except Exception as e:
             logger.error(f"Failed to sync Bybit positions: {e}")
+
+
+    async def sync_active_positions_with_exchange(self):
+        """Synchronize database with actual Bybit positions"""
+        try:
+            # Get all positions from Bybit
+            positions = self.analyzer.exchange.fetch_positions(params={'category': 'linear'})
+            
+            # Create a set of symbols that have open positions on Bybit
+            open_positions_on_bybit = set()
+            for pos in positions:
+                if pos['contracts'] > 0:  # Has an open position
+                    open_positions_on_bybit.add(pos['symbol'])
+            
+            # Get active signals from database
+            active_signals = self.database.get_active_signals()
+            
+            # Check each active signal
+            for signal in active_signals:
+                symbol = signal['coin']
+                
+                # If signal is marked as active but no position on Bybit, it was closed
+                if symbol not in open_positions_on_bybit:
+                    logger.warning(f"Signal {signal['signal_id']} for {symbol} not found on Bybit - closing")
+                    
+                    # Get current price for exit
+                    try:
+                        ticker = self.analyzer.exchange.fetch_ticker(symbol)
+                        exit_price = ticker['last']
+                    except:
+                        exit_price = signal.get('current_price', signal['entry_price'])
+                    
+                    # Determine exit reason based on price
+                    if signal['direction'] == 'LONG':
+                        if exit_price >= signal['take_profit'] * 0.99:
+                            exit_reason = "Take Profit Hit (Bybit)"
+                        elif exit_price <= signal['stop_loss'] * 1.01:
+                            exit_reason = "Stop Loss Hit (Bybit)"
+                        else:
+                            exit_reason = "Position Closed on Exchange"
+                    else:  # SHORT
+                        if exit_price <= signal['take_profit'] * 1.01:
+                            exit_reason = "Take Profit Hit (Bybit)"
+                        elif exit_price >= signal['stop_loss'] * 0.99:
+                            exit_reason = "Stop Loss Hit (Bybit)"
+                        else:
+                            exit_reason = "Position Closed on Exchange"
+                    
+                    # Close in database
+                    self.database.close_signal(signal['signal_id'], exit_price, exit_reason)
+                    self.active_signals.discard(signal['signal_id'])
+                    self.active_coins.discard(symbol)
+                    
+                    # Calculate P&L for logging
+                    position_value = signal.get('position_value')
+                    if not position_value:
+                        position_value = signal.get('analysis_data', {}).get('position_value', 0)
+                    
+                    if position_value > 0:
+                        if signal['direction'] == 'LONG':
+                            pnl_pct = ((exit_price - signal['entry_price']) / signal['entry_price']) * 100 * 15
+                        else:
+                            pnl_pct = ((signal['entry_price'] - exit_price) / signal['entry_price']) * 100 * 15
+                        pnl_usd = (pnl_pct / 100) * position_value
+                    else:
+                        pnl_usd = 0
+                        pnl_pct = 0
+                    
+                    # Broadcast closure
+                    await self.broadcast_to_clients({
+                        "type": "ml_signal_closed",
+                        "signal_id": signal['signal_id'],
+                        "coin": signal['coin'],
+                        "direction": signal['direction'],
+                        "exit_reason": exit_reason,
+                        "pnl_usd": round(pnl_usd, 2),
+                        "pnl_percentage": round(pnl_pct, 2),
+                        "exit_price": exit_price
+                    })
+                    
+                    logger.info(f"Synced closed position: {symbol} - {exit_reason} - P&L: ${pnl_usd:.2f}")
+            
+            return open_positions_on_bybit
+            
+        except Exception as e:
+            logger.error(f"Error syncing positions with exchange: {e}")
+            return set()
     
     
     async def execute_real_trade(self, signal_data: Dict) -> bool:
@@ -727,42 +824,52 @@ class MLTradingBot:
                     try:
                         coin = signal['coin'].replace('/USDT', '').replace('USDT', '')
                         symbol = f"{coin}USDT"
+                        
+                        # Get current price
                         current_price = await self.analyzer.get_current_price(symbol)
                         
                         if current_price > 0:
                             # Update database
                             self.database.update_signal_price(signal['signal_id'], current_price)
-    
-                            # Calculate live P&L
-                            entry_price = signal['entry_price']
-                            direction = signal['direction']
-    
-                            # Get ACTUAL position value from the signal (stored when trade was executed)
-                            # This should be stored in your database when the trade is executed
-                            position_value = signal.get('position_value')
-    
-                            # If not found in root, check analysis_data
-                            if not position_value:
-                                position_value = signal.get('analysis_data', {}).get('position_value')
-    
-                            # If still not found, calculate based on current balance (fallback)
-                            if not position_value:
-                                balance_info = await self.get_account_balance()
-                                position_value = balance_info['free'] * 0.15 * 15  # 15% of balance with 15x leverage
-                                logger.warning(f"Position value not found for {signal['signal_id']}, calculated: ${position_value}")
-    
-                            # Use actual leverage (15x)
-                            if direction == 'LONG':
-                                pnl_pct = ((current_price - entry_price) / entry_price) * 100 * 15
-                            else:
-                                pnl_pct = ((entry_price - current_price) / entry_price) * 100 * 15
-    
-                            # Use actual position value for USD calculation
-                            pnl_usd = (pnl_pct / 100) * position_value
-
-                            signal['current_price'] = current_price
-                            signal['live_pnl_usd'] = round(pnl_usd, 2)       # ← Make sure these are added
-                            signal['live_pnl_percentage'] = round(pnl_pct, 2)
+                            
+                            # CRITICAL: Get REAL P&L from Bybit
+                            real_pnl_usd = 0
+                            real_pnl_pct = 0
+                            
+                            try:
+                                # Fetch actual position from Bybit
+                                positions = self.analyzer.exchange.fetch_positions([symbol], params={'category': 'linear'})
+                                for pos in positions:
+                                    if pos['symbol'] == symbol and pos['contracts'] > 0:
+                                        # Use Bybit's actual unrealized P&L
+                                        real_pnl_usd = pos.get('unrealizedPnl', 0) or 0
+                                        # Calculate percentage based on position value
+                                        if pos.get('initialMargin', 0) > 0:
+                                            real_pnl_pct = (real_pnl_usd / pos['initialMargin']) * 100
+                                        else:
+                                            # Fallback calculation
+                                            entry_price = signal['entry_price']
+                                            if signal['direction'] == 'LONG':
+                                                real_pnl_pct = ((current_price - entry_price) / entry_price) * 100 * 15
+                                            else:
+                                                real_pnl_pct = ((entry_price - current_price) / entry_price) * 100 * 15
+                                        break
+                            except Exception as e:
+                                logger.warning(f"Could not fetch Bybit position for {symbol}: {e}")
+                                # Fallback to calculated P&L if can't fetch from Bybit
+                                entry_price = signal['entry_price']
+                                direction = signal['direction']
+                                position_value = signal.get('position_value')
+                                
+                                if not position_value:
+                                    position_value = signal.get('analysis_data', {}).get('position_value')
+                                
+                                if position_value:
+                                    if direction == 'LONG':
+                                        real_pnl_pct = ((current_price - entry_price) / entry_price) * 100 * 15
+                                    else:
+                                        real_pnl_pct = ((entry_price - current_price) / entry_price) * 100 * 15
+                                    real_pnl_usd = (real_pnl_pct / 100) * position_value
                             
                             # Enhanced ML metrics
                             analysis_data = signal.get('analysis_data', {})
@@ -770,21 +877,21 @@ class MLTradingBot:
                             model_confidence = analysis_data.get('model_confidence', 0)
                             
                             # Progress calculations
-                            if direction == 'LONG':
-                                tp_progress = ((current_price - entry_price) / 
-                                             (signal['take_profit'] - entry_price)) * 100
+                            if signal['direction'] == 'LONG':
+                                tp_progress = ((current_price - signal['entry_price']) / 
+                                             (signal['take_profit'] - signal['entry_price'])) * 100
                                 sl_distance = ((current_price - signal['stop_loss']) / 
-                                             (entry_price - signal['stop_loss'])) * 100
+                                             (signal['entry_price'] - signal['stop_loss'])) * 100
                             else:
-                                tp_progress = ((entry_price - current_price) / 
-                                             (entry_price - signal['take_profit'])) * 100
+                                tp_progress = ((signal['entry_price'] - current_price) / 
+                                             (signal['entry_price'] - signal['take_profit'])) * 100
                                 sl_distance = ((signal['stop_loss'] - current_price) / 
-                                             (signal['stop_loss'] - entry_price)) * 100
+                                             (signal['stop_loss'] - signal['entry_price'])) * 100
                             
-                            # Add ML-specific data
+                            # Add all signal data including REAL Bybit P&L
                             signal['current_price'] = current_price
-                            signal['live_pnl_usd'] = round(pnl_usd, 2)
-                            signal['live_pnl_percentage'] = round(pnl_pct, 2)
+                            signal['live_pnl_usd'] = round(real_pnl_usd, 2)  # This is now from Bybit
+                            signal['live_pnl_percentage'] = round(real_pnl_pct, 2)
                             signal['tp_progress'] = max(0, min(100, tp_progress))
                             signal['sl_distance'] = max(0, min(100, sl_distance))
                             signal['ml_prediction'] = ml_prediction
@@ -903,27 +1010,43 @@ class MLTradingBot:
             try:
                 portfolio = self.database.get_portfolio_stats()
         
-                # ADD: Fetch real Bybit balance
+                # Fetch real Bybit balance
                 real_balance = await self.get_account_balance()
                 portfolio['real_balance'] = real_balance['total']
                 portfolio['available_balance'] = real_balance['free']
                 portfolio['used_balance'] = real_balance['used']
         
-                # Calculate real open P&L from Bybit positions
+                # Calculate REAL open P&L from Bybit positions (not calculated)
                 active_signals = self.database.get_active_signals()
                 total_open_pnl = 0
         
-                for signal in active_signals:
-                    try:
-                        symbol = signal['coin'].replace('/USDT', '') + 'USDT'
-                        positions = self.analyzer.exchange.fetch_positions([symbol])
-                        for pos in positions:
-                            if pos['contracts'] > 0:
-                                total_open_pnl += pos['unrealizedPnl'] or 0
-                    except:
-                        pass
+                try:
+                    # Get ALL positions from Bybit to sum up unrealized P&L
+                    all_positions = self.analyzer.exchange.fetch_positions(params={'category': 'linear'})
+                    for pos in all_positions:
+                        if pos['contracts'] > 0:  # Has an open position
+                            unrealized_pnl = pos.get('unrealizedPnl', 0) or 0
+                            total_open_pnl += unrealized_pnl
+                            logger.debug(f"Position {pos['symbol']}: Unrealized P&L = ${unrealized_pnl:.2f}")
+                except Exception as e:
+                    logger.error(f"Error fetching real P&L from Bybit: {e}")
+                    # Fallback to calculated P&L if Bybit fetch fails
+                    for signal in active_signals:
+                        try:
+                            symbol = signal['coin'].replace('/USDT', '') + 'USDT'
+                            current_price = await self.analyzer.get_current_price(symbol)
+                            if current_price > 0:
+                                position_value = signal.get('position_value') or signal.get('analysis_data', {}).get('position_value', 0)
+                                if position_value > 0:
+                                    if signal['direction'] == 'LONG':
+                                        pnl_pct = ((current_price - signal['entry_price']) / signal['entry_price']) * 100 * 15
+                                    else:
+                                        pnl_pct = ((signal['entry_price'] - current_price) / signal['entry_price']) * 100 * 15
+                                    total_open_pnl += (pnl_pct / 100) * position_value
+                        except:
+                            pass
         
-                portfolio['real_open_pnl'] = total_open_pnl
+                portfolio['real_open_pnl'] = round(total_open_pnl, 2)
                 portfolio['total_balance'] = real_balance['total'] + total_open_pnl
                 
                 # Add ML-specific metrics
@@ -1209,19 +1332,28 @@ class MLTradingBot:
                         "models_active": len(self.analyzer.models)
                     })
                     
-                    # Check signal exits first
+                    # CRITICAL: Sync with exchange first
+                    logger.info("Syncing positions with Bybit...")
+                    open_positions = await self.sync_active_positions_with_exchange()
+                    
+                    # Check signal exits
                     await self.check_signal_exits()
-
+                    
+                    # Evaluate and adjust positions
                     await self.evaluate_and_adjust_positions()
                     
-                    # ML signal generation
+                    # Get fresh active signals after sync
                     active_signals = self.database.get_active_signals()
                     max_concurrent_signals = 3
+                    
+                    # Only generate new signals if we have room
+                    current_position_count = len(active_signals)
+                    logger.info(f"Current positions: {current_position_count} (Exchange: {len(open_positions)}, Max: {max_concurrent_signals})")
                     
                     new_signals_count = 0
                     ml_predictions_made = 0
                     
-                    if len(active_signals) < max_concurrent_signals:
+                    if current_position_count < max_concurrent_signals:
                         try:
                             # Use ML analyzer for signal generation
                             new_signals = await self.analyzer.scan_all_coins()
@@ -1231,12 +1363,17 @@ class MLTradingBot:
                             
                             for signal_data in new_signals:
                                 if len(active_signals) + new_signals_count >= max_concurrent_signals:
+                                    logger.info(f"Max concurrent signals reached ({max_concurrent_signals})")
                                     break
                                 
                                 # Enhanced ML validation
                                 if not self.validate_ml_signal_before_save(signal_data):
                                     continue
                                 
+                                # Check if coin already has position
+                                if signal_data['coin'] in active_coins:
+                                    logger.info(f"Skipping {signal_data['coin']} - already has active position")
+                                    continue
                                 
                                 # Execute REAL trade
                                 trade_executed = await self.execute_real_trade(signal_data)
@@ -1248,6 +1385,7 @@ class MLTradingBot:
                                         new_signals_count += 1
                                         self.active_coins.add(signal_data['coin'])
                                         self.active_signals.add(signal_data['signal_id'])
+                                        active_coins.add(signal_data['coin'])  # Update local set
 
                                         await self.broadcast_to_clients({
                                             "type": "new_ml_signal",
@@ -1263,10 +1401,12 @@ class MLTradingBot:
                                 else:
                                     logger.error(f"Failed to execute real trade for {signal_data['coin']}")
                                     self.update_ml_signal_tracking(signal_data)
-                                    continue                              
-
+                                    continue
+                                    
                         except Exception as e:
                             logger.error(f"Error during ML signal generation: {e}")
+                    else:
+                        logger.info(f"Not generating new signals - at maximum ({current_position_count}/{max_concurrent_signals})")
                     
                     # Update performance metrics
                     self.scan_count += 1
@@ -1281,7 +1421,8 @@ class MLTradingBot:
                     self.database.log_bot_activity(
                         'INFO', 'ML_SCANNER', 'ML scan completed',
                         f'Duration: {scan_duration:.1f}s, ML predictions: {ml_predictions_made}, '
-                        f'New signals: {new_signals_count}, Models active: {len(self.analyzer.models)}'
+                        f'New signals: {new_signals_count}, Models active: {len(self.analyzer.models)}, '
+                        f'Active positions: {len(active_signals)}'
                     )
                     
                     # Broadcast scan completion
@@ -1291,7 +1432,8 @@ class MLTradingBot:
                         "duration": scan_duration,
                         "new_signals": new_signals_count,
                         "ml_predictions": ml_predictions_made,
-                        "performance": self.performance_metrics
+                        "performance": self.performance_metrics,
+                        "active_positions": len(active_signals)
                     })
                     
             except Exception as e:
@@ -1729,6 +1871,25 @@ class MLTradingBot:
                     
             except Exception as e:
                 logger.error(f"Error in position monitoring cycle: {e}")
+
+    async def exchange_sync_cycle(self):
+        """Periodically sync with exchange to catch any missed closures"""
+        sync_interval = 120  # Check every 2 minutes
+        
+        while self.running:
+            try:
+                await asyncio.sleep(sync_interval)
+                
+                if not self.running:
+                    break
+                
+                # Don't sync while scanning to avoid conflicts
+                if not self.is_scanning:
+                    logger.debug("Running periodic exchange sync...")
+                    await self.sync_active_positions_with_exchange()
+                    
+            except Exception as e:
+                logger.error(f"Error in exchange sync cycle: {e}")
 
     def get_ml_enhanced_dashboard(self) -> str:
         """Return ML-enhanced dashboard HTML"""
@@ -2428,6 +2589,7 @@ async def startup_event():
         asyncio.create_task(bot.ml_scan_cycle())
         asyncio.create_task(bot.ml_retrain_cycle())
         asyncio.create_task(bot.position_monitoring_cycle())
+        asyncio.create_task(bot.exchange_sync_cycle())
         logger.info("ML trading bot auto-started with advanced features")
 
 @app.on_event("shutdown")
