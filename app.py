@@ -1196,32 +1196,8 @@ class MLTradingBot:
                                 else:
                                     logger.error(f"Failed to execute real trade for {signal_data['coin']}")
                                     self.update_ml_signal_tracking(signal_data)
-                                    continue                                 
-                                    
-                                    
-                                    
-                                    # Grace period
-                                    asyncio.create_task(
-                                        self.remove_from_grace_period(
-                                            signal_data['signal_id'],
-                                            self.signal_grace_period
-                                        )
-                                    )
-                                    
-                                    # Broadcast ML signal
-                                    await self.broadcast_to_clients({
-                                        "type": "new_ml_signal",
-                                        "signal": signal_data,
-                                        "ml_prediction": signal_data.get('ml_prediction', 0),
-                                        "model_confidence": signal_data.get('model_confidence', 0),
-                                        "top_features": dict(list(
-                                            signal_data.get('feature_importance', {}).items())[:3])
-                                    })
-                                    
-                                    logger.info(f"New ML {signal_data['direction']} signal: {signal_data['coin']} "
-                                              f"(Pred: {signal_data.get('ml_prediction', 0):.4f}, "
-                                              f"Conf: {signal_data.get('model_confidence', 0):.3f})")
-                        
+                                    continue                              
+
                         except Exception as e:
                             logger.error(f"Error during ML signal generation: {e}")
                     
