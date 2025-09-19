@@ -107,6 +107,17 @@ class MLEnhancedDatabase:
             )
             ''')
 
+            cursor.execute('''
+                PRAGMA table_info(signals)
+            ''')
+            columns = [column[1] for column in cursor.fetchall()]
+
+            if 'position_value' not in columns:
+                cursor.execute('''
+                    ALTER TABLE signals ADD COLUMN position_value REAL DEFAULT NULL
+                ''')
+                logger.info("Added position_value column to signals table")
+
             # In database.py, add a table for position adjustments
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS position_adjustments (
@@ -441,7 +452,7 @@ class MLEnhancedDatabase:
                     signal_id, timestamp, coin, direction, entry_price, current_price,
                     take_profit, stop_loss, confidence, analysis_data, indicators, 
                     ml_prediction, model_confidence, feature_importance, model_type,
-                    prediction_horizon, feature_count, orthogonality_score, status
+                    prediction_horizon, feature_count, orthogonality_score, status, position_value
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     signal_data['signal_id'],
@@ -462,7 +473,8 @@ class MLEnhancedDatabase:
                     signal_data.get('prediction_horizon', 24),
                     len(signal_data.get('feature_importance', {})),
                     signal_data.get('orthogonality_score', 0),
-                    'active'
+                    'active',
+                    signal_data.get('position_value')
                 ))
         
                 # Create corresponding trade result entry with ML metrics
@@ -708,12 +720,24 @@ class MLEnhancedDatabase:
                     duration_minutes = 0
                 
                 # Calculate final P&L with 10x leverage
-                if direction == 'LONG':
-                    pnl_percentage = ((exit_price - entry_price) / entry_price) * 100 * 10
-                else:  # SHORT
-                    pnl_percentage = ((entry_price - exit_price) / entry_price) * 100 * 10
-                
-                pnl_usd = (pnl_percentage / 100) * 1000
+                cursor.execute('SELECT position_value FROM signals WHERE signal_id = ?', (signal_id,))
+                position_value_result = cursor.fetchone()
+                position_value = position_value_result[0] if position_value_result and position_value_result[0] else None
+
+                # Calculate with actual leverage (15x) and position value
+                leverage = 15
+                if position_value:
+                    if direction == 'LONG':
+                        pnl_percentage = ((exit_price - entry_price) / entry_price) * 100 * leverage
+                    else:  # SHORT
+                        pnl_percentage = ((entry_price - exit_price) / entry_price) * 100 * leverage
+    
+                    pnl_usd = (pnl_percentage / 100) * position_value
+                else:
+                    # Fallback if no position_value stored
+                    logger.warning(f"No position_value for signal {signal_id}, P&L set to 0")
+                    pnl_usd = 0
+                    pnl_percentage = 0
                 
                 # Calculate ML prediction accuracy
                 if ml_prediction is not None:

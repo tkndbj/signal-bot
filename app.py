@@ -340,7 +340,11 @@ class MLTradingBot:
                 signal_data['order_id'] = order['id']
                 signal_data['executed_price'] = order['average'] if order.get('average') else current_price
                 signal_data['executed_quantity'] = quantity
-                signal_data['position_value'] = position_value
+                signal_data['position_value'] = final_position_value
+
+                if 'analysis_data' not in signal_data:
+                    signal_data['analysis_data'] = {}
+                signal_data['analysis_data']['position_value'] = final_position_value
                 
                 return True
             else:
@@ -372,12 +376,16 @@ class MLTradingBot:
                     'positionIdx': 0      # One-way mode
                 })
             
-                if response and response.get('retCode') == 0:
+                if response and str(response.get('retCode')) == '0':
                     logger.info(f"SL/TP set successfully for {symbol} - SL: {stop_loss}, TP: {take_profit}")
                     return True
                 else:
-                    logger.error(f"Failed to set SL/TP: {response}")
-                    return False
+                    if response and response.get('retMsg') == 'OK':
+                        logger.info(f"SL/TP set successfully for {symbol} (OK response) - SL: {stop_loss}, TP: {take_profit}")
+                        return True
+                    else:
+                        logger.error(f"Failed to set SL/TP: {response}")
+                        return False
                 
             except Exception as e:
                 logger.error(f"Error setting SL/TP via trading-stop: {e}")
@@ -651,13 +659,21 @@ class MLTradingBot:
                     for row in cursor.fetchall():
                         trade = dict(row)
                         # Calculate P&L
+                        position_value = trade.get('position_value')
+                        if not position_value:
+                            # For old trades without position_value stored, estimate from current balance
+                            trade['pnl_usd'] = 0
+                            trade['pnl_percentage'] = 0
+                            trades.append(trade)
+                            continue
+
                         if trade['direction'] == 'LONG':
-                            pnl_pct = ((trade['exit_price'] - trade['entry_price']) / trade['entry_price']) * 100 * 10
+                            pnl_pct = ((trade['exit_price'] - trade['entry_price']) / trade['entry_price']) * 100 * 15
                         else:
-                            pnl_pct = ((trade['entry_price'] - trade['exit_price']) / trade['entry_price']) * 100 * 10
-                
-                        trade['pnl_usd'] = (pnl_pct / 100) * 1000
-                        trade['pnl_percentage'] = pnl_pct
+                            pnl_pct = ((trade['entry_price'] - trade['exit_price']) / trade['entry_price']) * 100 * 15
+
+                        trade['pnl_usd'] = (pnl_pct / 100) * position_value
+                        trade['pnl_percentage'] = pnl_pct                        
                         trades.append(trade)
             
                     return JSONResponse(content={"trades": trades})
@@ -681,17 +697,33 @@ class MLTradingBot:
                         if current_price > 0:
                             # Update database
                             self.database.update_signal_price(signal['signal_id'], current_price)
-                            
+    
                             # Calculate live P&L
                             entry_price = signal['entry_price']
                             direction = signal['direction']
-                            
+    
+                            # Get ACTUAL position value from the signal (stored when trade was executed)
+                            # This should be stored in your database when the trade is executed
+                            position_value = signal.get('position_value')
+    
+                            # If not found in root, check analysis_data
+                            if not position_value:
+                                position_value = signal.get('analysis_data', {}).get('position_value')
+    
+                            # If still not found, calculate based on current balance (fallback)
+                            if not position_value:
+                                balance_info = await self.get_account_balance()
+                                position_value = balance_info['free'] * 0.15 * 15  # 15% of balance with 15x leverage
+                                logger.warning(f"Position value not found for {signal['signal_id']}, calculated: ${position_value}")
+    
+                            # Use actual leverage (15x)
                             if direction == 'LONG':
-                                pnl_pct = ((current_price - entry_price) / entry_price) * 100 * 10
+                                pnl_pct = ((current_price - entry_price) / entry_price) * 100 * 15
                             else:
-                                pnl_pct = ((entry_price - current_price) / entry_price) * 100 * 10
-                            
-                            pnl_usd = (pnl_pct / 100) * 1000
+                                pnl_pct = ((entry_price - current_price) / entry_price) * 100 * 15
+    
+                            # Use actual position value for USD calculation
+                            pnl_usd = (pnl_pct / 100) * position_value
 
                             signal['current_price'] = current_price
                             signal['live_pnl_usd'] = round(pnl_usd, 2)       # ← Make sure these are added
@@ -1441,13 +1473,47 @@ class MLTradingBot:
                             self.active_signals.discard(signal['signal_id'])
                             self.active_coins.discard(signal['coin'])
                             
-                            # Calculate P&L
-                            if signal['direction'] == 'LONG':
-                                pnl_pct = ((exit_price - signal['entry_price']) / signal['entry_price']) * 100 * 10
+                            # Calculate P&L                           
+                            position_value = signal.get('position_value')
+                            if not position_value:
+                                position_value = signal.get('analysis_data', {}).get('position_value')
+
+                            # If still not found, calculate dynamically based on current balance
+                            if not position_value:
+                                try:
+                                    # Get actual position from exchange if available
+                                    symbol = signal['coin']
+                                    positions = self.analyzer.exchange.fetch_positions([symbol], params={'category': 'linear'})
+                                    for pos in positions:
+                                        if pos['symbol'] == symbol and pos['contracts'] > 0:
+                                            position_value = pos['contracts'] * pos['markPrice']
+                                            break
+        
+                                    # If no position on exchange, calculate from current balance
+                                    if not position_value:
+                                        balance = await self.get_account_balance()
+                                        position_value = balance['free'] * 0.15 * 15  # 15% of balance with 15x leverage
+                                        logger.warning(f"Position value not stored for {signal['signal_id']}, calculated from balance: ${position_value:.2f}")
+                                except Exception as e:
+                                    logger.error(f"Critical error: Cannot calculate position value for P&L: {e}")
+                                    # If we can't calculate position value, we can't calculate P&L
+                                    # Skip this signal or return 0 P&L
+                                    position_value = 0
+                                    pnl_usd = 0
+                                    pnl_pct = 0
+                                    continue  # Skip to next signal
+
+                            # Only calculate P&L if we have a valid position value
+                            if position_value > 0:
+                                if signal['direction'] == 'LONG':
+                                    pnl_pct = ((exit_price - signal['entry_price']) / signal['entry_price']) * 100 * 15
+                                else:
+                                    pnl_pct = ((signal['entry_price'] - exit_price) / signal['entry_price']) * 100 * 15
+    
+                                pnl_usd = (pnl_pct / 100) * position_value
                             else:
-                                pnl_pct = ((signal['entry_price'] - exit_price) / signal['entry_price']) * 100 * 10
-                            
-                            pnl_usd = (pnl_pct / 100) * 1000
+                                pnl_usd = 0
+                                pnl_pct = 0
                             
                             # Update ML tracking
                             self.update_ml_prediction_accuracy(signal, exit_reason == "Take Profit Hit")
@@ -1523,9 +1589,9 @@ class MLTradingBot:
                             
                             # Calculate P&L for logging
                             if signal['direction'] == 'LONG':
-                                pnl_pct = ((current_price - signal['entry_price']) / signal['entry_price']) * 100 * 10
+                                pnl_pct = ((current_price - signal['entry_price']) / signal['entry_price']) * 100 * 15
                             else:
-                                pnl_pct = ((signal['entry_price'] - current_price) / signal['entry_price']) * 100 * 10
+                                pnl_pct = ((signal['entry_price'] - current_price) / signal['entry_price']) * 100 * 15
                             
                             await self.broadcast_to_clients({
                                 "type": "position_adjusted",
