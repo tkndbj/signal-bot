@@ -1200,90 +1200,114 @@ class MLTradingAnalyzer:
             return {}
     
     async def generate_ml_signal(self, df: pd.DataFrame, symbol: str) -> Optional[TradingSignal]:
+        """Generate ML-based trading signal"""
         try:
-            current_price = float(df['close'].iloc[-1])
-            if current_price <= 0:
-                logger.error(f"Invalid current price for {symbol}: {current_price}")
+            if len(df) < self.lookback_periods:
+                logger.warning(f"Insufficient data for {symbol}")
                 return None
-
-            # Calculate ATR-based volatility
-            atr = self.calculate_atr(df, period=14)
-            atr_pct = atr / current_price if current_price > 0 else 0.01
-
-            # ML prediction
-            df_features = self.engineer_features(df)
-            df_features = self.orthogonalize_features(df_features)
-            df_features, selected_features = self.select_features(df_features)
-            model = self.models.get(symbol.replace('/USDT', ''), None)
-            if model is None:
-                logger.warning(f"No model available for {symbol}")
+            
+            # Train model if not exists or retrain periodically
+            if symbol not in self.models or len(df) % 100 == 0:  # Retrain every 100 periods
+                model_info = self.train_model(df, symbol)
+                if not model_info:
+                    return None
+            
+            # Make prediction
+            prediction_result = self.predict_price_movement(df, symbol)
+            if not prediction_result:
                 return None
-
-            X = df_features[selected_features].iloc[-1:].values
-            prediction = float(model.predict(X)[0])
-            model_confidence = float(model.predict_proba(X)[0][1]) if hasattr(model, 'predict_proba') else 0.95
-
+            
+            prediction = prediction_result['prediction']
+            model_confidence = prediction_result['confidence']
+            
+            # Quality gates
+            if (model_confidence < self.min_model_confidence or
+                abs(prediction) < 0.003):  # Minimum 1% predicted move
+                return None
+            
+            current_price = df['close'].iloc[-1]
+            
+            # Determine direction
             direction = 'LONG' if prediction > 0 else 'SHORT'
-            base_stop_pct = max(0.02, atr_pct * 1.5)  # Minimum 2% or 1.5x ATR
+            
+            # Calculate position sizing and risk management
+            volatility = df['close'].pct_change().std() * np.sqrt(24)  # Daily volatility
+            atr_pct = (talib.ATR(df['high'].values, df['low'].values, df['close'].values, 14)[-1] / current_price)
+            
+            # Dynamic stop loss based on volatility and prediction confidence
+            base_stop_pct = max(0.015, atr_pct * 1.5)  # Minimum 1.5% or 1.5x ATR
             confidence_multiplier = 2.0 - model_confidence
-            stop_pct = min(base_stop_pct * confidence_multiplier, 0.05)  # Cap at 5%
+            stop_pct = base_stop_pct * confidence_multiplier
+            stop_pct = min(stop_pct, self.max_risk_per_trade / 100)
 
-            # Dynamic minimum price difference
-            min_price_diff = max(current_price * 0.02, 0.0001)  # 2% or 0.0001
-
+            # Ensure minimum price difference for low-price assets
+            min_price_diff = max(current_price * 0.01, 0.001)  # At least 0.001
             if direction == 'LONG':
                 stop_loss = current_price * (1 - stop_pct)
-                min_tp = current_price + min_price_diff
+                min_tp = current_price + min_price_diff  # Ensure minimum TP distance
                 predicted_tp = current_price * (1 + abs(prediction))
                 take_profit = max(min_tp, predicted_tp)
             else:
                 stop_loss = current_price * (1 + stop_pct)
                 min_tp = current_price - min_price_diff
-                if min_tp <= 0:
-                    min_tp = current_price * 0.95  # Ensure positive TP
                 predicted_tp = current_price * (1 - abs(prediction))
-                take_profit = max(min_tp, predicted_tp) if predicted_tp <= 0 else min(predicted_tp, min_tp)
-
-            # Round prices to appropriate precision
-            stop_loss = round(max(0.0001, stop_loss), 8)
-            take_profit = round(max(0.0001, take_profit), 8)
-
-            # Calculate risk-reward ratio
-            risk = abs(current_price - stop_loss)
-            reward = abs(take_profit - current_price)
-            risk_reward_ratio = reward / risk if risk > 0 else 0
-
-            signal_data = {
-                'signal_id': f"{symbol}_{int(time.time())}_ML_{direction[0]}",
-                'timestamp': datetime.now().isoformat(),
-                'coin': symbol,
-                'direction': direction,
-                'entry_price': current_price,
-                'current_price': current_price,
-                'take_profit': take_profit,
-                'stop_loss': stop_loss,
-                'confidence': int(model_confidence * 100),
-                'ml_prediction': prediction,
-                'model_confidence': model_confidence,
-                'analysis_data': {
+                take_profit = min(min_tp, predicted_tp)
+            
+            # Calculate final metrics
+            if direction == 'LONG':
+                risk = current_price - stop_loss
+                reward = take_profit - current_price
+            else:
+                risk = stop_loss - current_price
+                reward = current_price - take_profit
+            
+            rr_ratio = reward / risk if risk > 0 else 0
+            
+            if rr_ratio < self.min_rr_ratio:
+                return None
+            
+            # Determine signal strength based on ML metrics
+            if model_confidence > 0.9 and abs(prediction) > 0.05:
+                strength = SignalStrength.INSTITUTIONAL
+            elif model_confidence > 0.8 and abs(prediction) > 0.03:
+                strength = SignalStrength.STRONG
+            else:
+                strength = SignalStrength.MODERATE
+            
+            # Create confluence factors from top features
+            feature_importance = prediction_result['feature_importance']
+            top_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)[:5]
+            confluence_factors = [f"ML Feature: {feature} (imp: {importance:.3f})" 
+                                for feature, importance in top_features]
+            
+            signal_id = f"{symbol.replace('/', '')}_{int(datetime.now().timestamp())}_ML_{direction[0]}"
+            
+            return TradingSignal(
+                signal_id=signal_id,
+                timestamp=datetime.now().isoformat(),
+                coin=symbol.replace('/USDT', ''),
+                direction=direction,
+                entry_price=round(current_price, 6),
+                current_price=round(current_price, 6),
+                take_profit=round(take_profit, 6),
+                stop_loss=round(stop_loss, 6),
+                confidence=min(95, int(model_confidence * 100)),
+                strength=strength,
+                risk_reward_ratio=round(rr_ratio, 2),
+                risk_percentage=round(stop_pct * 100, 2),
+                analysis_summary={
                     'ml_prediction': round(prediction, 4),
                     'model_confidence': round(model_confidence, 3),
-                    'model_type': model.__class__.__name__,
-                    'confluence_factors': [f"ML Feature: {f} (imp: {self.feature_importance_history.get(symbol.replace('/USDT', ''), {}).get(f, 0):.3f})" for f in selected_features[:5]],
-                    'risk_reward_ratio': round(risk_reward_ratio, 2),
-                    'risk_percentage': 1.0,
-                    'signal_grade': 'ml_based',
-                    'feature_importance_top5': {f: self.feature_importance_history.get(symbol.replace('/USDT', ''), {}).get(f, 0) for f in selected_features[:5]}
+                    'model_type': prediction_result['model_type'],
+                    'volatility': round(volatility, 4),
+                    'atr_pct': round(atr_pct, 4)
                 },
-                'indicators': {
-                    'ml_prediction_pct': round(prediction * 100, 2),
-                    'model_confidence': model_confidence,
-                    'volatility': atr_pct
-                }
-            }
-
-            return TradingSignal(**signal_data)
-
+                confluence_factors=confluence_factors,
+                ml_prediction=prediction,
+                feature_importance=feature_importance,
+                model_confidence=model_confidence
+            )
+            
         except Exception as e:
             logger.error(f"Error generating ML signal for {symbol}: {e}")
             return None
