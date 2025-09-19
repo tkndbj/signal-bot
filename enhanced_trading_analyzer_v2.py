@@ -1205,54 +1205,95 @@ class MLTradingAnalyzer:
             if len(df) < self.lookback_periods:
                 logger.warning(f"Insufficient data for {symbol}")
                 return None
-            
+        
             # Train model if not exists or retrain periodically
-            if symbol not in self.models or len(df) % 100 == 0:  # Retrain every 100 periods
+            if symbol not in self.models or len(df) % 100 == 0:
                 model_info = self.train_model(df, symbol)
                 if not model_info:
                     return None
-            
+        
             # Make prediction
             prediction_result = self.predict_price_movement(df, symbol)
             if not prediction_result:
                 return None
-            
+        
             prediction = prediction_result['prediction']
             model_confidence = prediction_result['confidence']
-            
+        
             # Quality gates
             if (model_confidence < self.min_model_confidence or
-                abs(prediction) < 0.003):  # Minimum 1% predicted move
+                abs(prediction) < 0.003):
                 return None
-            
+        
             current_price = df['close'].iloc[-1]
-            
+        
+            # Fetch symbol info for tick size and minimum price
+            try:
+                symbol_info = self.exchange.market(symbol)
+                tick_size = symbol_info['precision']['price']
+                min_price = symbol_info['limits']['price']['min']
+            except Exception as e:
+                logger.error(f"Failed to fetch symbol info for {symbol}: {e}")
+                return None
+        
+            # Ensure current price is valid
+            if current_price <= 0 or current_price < min_price:
+                logger.error(f"Invalid current price for {symbol}: {current_price}")
+                return None
+        
             # Determine direction
             direction = 'LONG' if prediction > 0 else 'SHORT'
-            
+        
             # Calculate position sizing and risk management
-            volatility = df['close'].pct_change().std() * np.sqrt(24)  # Daily volatility
+            volatility = df['close'].pct_change().std() * np.sqrt(24)
             atr_pct = (talib.ATR(df['high'].values, df['low'].values, df['close'].values, 14)[-1] / current_price)
-            
+        
             # Dynamic stop loss based on volatility and prediction confidence
-            base_stop_pct = max(0.015, atr_pct * 1.5)  # Minimum 1.5% or 1.5x ATR
+            base_stop_pct = max(0.015, atr_pct * 1.5)
             confidence_multiplier = 2.0 - model_confidence
             stop_pct = base_stop_pct * confidence_multiplier
             stop_pct = min(stop_pct, self.max_risk_per_trade / 100)
-
-            # Ensure minimum price difference for low-price assets
-            min_price_diff = max(current_price * 0.01, 0.001)  # At least 0.001
+        
+            # Ensure minimum price difference based on tick size
+            min_price_diff = max(current_price * 0.01, tick_size * 5)  # At least 1% or 5x tick size
+        
             if direction == 'LONG':
                 stop_loss = current_price * (1 - stop_pct)
-                min_tp = current_price + min_price_diff  # Ensure minimum TP distance
                 predicted_tp = current_price * (1 + abs(prediction))
+                min_tp = current_price + min_price_diff
                 take_profit = max(min_tp, predicted_tp)
             else:
                 stop_loss = current_price * (1 + stop_pct)
-                min_tp = current_price - min_price_diff
                 predicted_tp = current_price * (1 - abs(prediction))
+                min_tp = current_price - min_price_diff
                 take_profit = min(min_tp, predicted_tp)
-            
+        
+            # Align prices with Bybit's tick size
+            current_price = self.exchange.price_to_precision(symbol, current_price)
+            stop_loss = self.exchange.price_to_precision(symbol, stop_loss)
+            take_profit = self.exchange.price_to_precision(symbol, take_profit)
+        
+            # Validate prices
+            if stop_loss <= 0 or take_profit <= 0 or stop_loss < min_price or take_profit < min_price:
+                logger.error(f"Invalid prices for {symbol}: SL={stop_loss}, TP={take_profit}, min_price={min_price}")
+                return None
+        
+            # Validate price differences
+            if direction == 'LONG':
+                if not (stop_loss < current_price < take_profit):
+                    logger.error(f"Invalid LONG price order for {symbol}: SL={stop_loss}, Entry={current_price}, TP={take_profit}")
+                    return None
+                if (current_price - stop_loss) < min_price_diff or (take_profit - current_price) < min_price_diff:
+                    logger.error(f"Price difference too small for {symbol}: SL={stop_loss}, Entry={current_price}, TP={take_profit}, min_diff={min_price_diff}")
+                    return None
+            else:
+                if not (take_profit < current_price < stop_loss):
+                    logger.error(f"Invalid SHORT price order for {symbol}: TP={take_profit}, Entry={current_price}, SL={stop_loss}")
+                    return None
+                if (stop_loss - current_price) < min_price_diff or (current_price - take_profit) < min_price_diff:
+                    logger.error(f"Price difference too small for {symbol}: SL={stop_loss}, Entry={current_price}, TP={take_profit}, min_diff={min_price_diff}")
+                    return None
+        
             # Calculate final metrics
             if direction == 'LONG':
                 risk = current_price - stop_loss
@@ -1260,28 +1301,28 @@ class MLTradingAnalyzer:
             else:
                 risk = stop_loss - current_price
                 reward = current_price - take_profit
-            
+        
             rr_ratio = reward / risk if risk > 0 else 0
-            
+        
             if rr_ratio < self.min_rr_ratio:
                 return None
-            
-            # Determine signal strength based on ML metrics
+        
+            # Determine signal strength
             if model_confidence > 0.9 and abs(prediction) > 0.05:
                 strength = SignalStrength.INSTITUTIONAL
             elif model_confidence > 0.8 and abs(prediction) > 0.03:
                 strength = SignalStrength.STRONG
             else:
                 strength = SignalStrength.MODERATE
-            
-            # Create confluence factors from top features
+        
+            # Create confluence factors
             feature_importance = prediction_result['feature_importance']
             top_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)[:5]
             confluence_factors = [f"ML Feature: {feature} (imp: {importance:.3f})" 
                                 for feature, importance in top_features]
-            
+        
             signal_id = f"{symbol.replace('/', '')}_{int(datetime.now().timestamp())}_ML_{direction[0]}"
-            
+        
             return TradingSignal(
                 signal_id=signal_id,
                 timestamp=datetime.now().isoformat(),
@@ -1307,7 +1348,7 @@ class MLTradingAnalyzer:
                 feature_importance=feature_importance,
                 model_confidence=model_confidence
             )
-            
+        
         except Exception as e:
             logger.error(f"Error generating ML signal for {symbol}: {e}")
             return None
