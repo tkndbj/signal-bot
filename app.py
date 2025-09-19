@@ -322,7 +322,7 @@ class MLTradingBot:
 
             if order_filled:
                 # Set stop loss and take profit
-                await self.set_sl_tp_orders(
+                sl_tp_success = await self.set_sl_tp_orders(
                     signal_data['coin'],
                     signal_data['direction'],
                     quantity,
@@ -353,58 +353,78 @@ class MLTradingBot:
     
     async def set_sl_tp_orders(self, symbol: str, direction: str, quantity: float, 
                            stop_loss: float, take_profit: float) -> bool:
-        """Set stop loss and take profit orders on Bybit"""
+        """Set stop loss and take profit orders on Bybit using V5 API for UTA"""
         try:
-            # Get current position to determine position side
-            positions = self.analyzer.exchange.fetch_positions([symbol], params={'category': 'linear'})
-            position = next((p for p in positions if p['symbol'] == symbol and p['contracts'] > 0), None)
+            # Wait for position to be registered
+            await asyncio.sleep(3)
         
-            if not position:
-                logger.warning(f"No position found for {symbol} to set SL/TP")
-                return False
-
-            # Stop Loss Order (Market order triggered by stop price)
-            sl_side = 'sell' if direction == 'LONG' else 'buy'
+            # For UTA, use the set_trading_stop endpoint instead of creating separate orders
             try:
-                sl_order = self.analyzer.exchange.create_order(
-                    symbol=symbol,
-                    type='market',
-                    side=sl_side,
-                    amount=quantity,
-                    price=None,  # No price for market orders
-                    params={
-                        'stopPrice': stop_loss,
-                        'triggerBy': 'LastPrice',
-                        'closeOnTrigger': True,
-                        'reduceOnly': True,
-                        'positionIdx': 0
-                    }
-                )
-                logger.info(f"Stop Loss set at {stop_loss} for {symbol}")
-            except Exception as e:
-                logger.error(f"Failed to set Stop Loss for {symbol}: {e}")
-
-            # Take Profit Order (Limit order)  
-            tp_side = 'sell' if direction == 'LONG' else 'buy'
-            try:
-                tp_order = self.analyzer.exchange.create_order(
-                    symbol=symbol,
-                    type='limit',
-                    side=tp_side,
-                    amount=quantity,
-                    price=take_profit,
-                    params={
-                        'closeOnTrigger': True,
-                        'reduceOnly': True,
-                        'positionIdx': 0,
-                        'timeInForce': 'GTC'
-                    }
-                )
-                logger.info(f"Take Profit set at {take_profit} for {symbol}")
-            except Exception as e:
-                logger.error(f"Failed to set Take Profit for {symbol}: {e}")
+                # Use the V5 API set_trading_stop method
+                response = self.analyzer.exchange.privatePostV5PositionTradingStop({
+                    'category': 'linear',
+                    'symbol': symbol,
+                    'stopLoss': str(stop_loss),
+                    'takeProfit': str(take_profit),
+                    'tpTriggerBy': 'LastPrice',
+                    'slTriggerBy': 'LastPrice',
+                    'tpslMode': 'Full',  # Apply to full position
+                    'positionIdx': 0      # One-way mode
+                })
             
-            return True
+                if response and response.get('retCode') == 0:
+                    logger.info(f"SL/TP set successfully for {symbol} - SL: {stop_loss}, TP: {take_profit}")
+                    return True
+                else:
+                    logger.error(f"Failed to set SL/TP: {response}")
+                    return False
+                
+            except Exception as e:
+                logger.error(f"Error setting SL/TP via trading-stop: {e}")
+            
+                # Fallback: Try using conditional orders
+                try:
+                    # Stop Loss Order
+                    sl_side = 'Sell' if direction == 'LONG' else 'Buy'
+                    sl_response = self.analyzer.exchange.create_order(
+                        symbol=symbol,
+                        type='market',
+                        side=sl_side,
+                        amount=quantity,
+                        params={
+                            'stopLoss': str(stop_loss),
+                            'triggerBy': 'LastPrice',
+                            'reduceOnly': True,
+                            'closeOnTrigger': True,
+                            'positionIdx': 0,
+                            'category': 'linear'
+                        }
+                    )
+                
+                    # Take Profit Order
+                    tp_side = 'Sell' if direction == 'LONG' else 'Buy'
+                    tp_response = self.analyzer.exchange.create_order(
+                        symbol=symbol,
+                        type='limit',
+                        side=tp_side,
+                        amount=quantity,
+                        price=take_profit,
+                        params={
+                            'takeProfit': str(take_profit),
+                            'triggerBy': 'LastPrice',
+                            'reduceOnly': True,
+                            'closeOnTrigger': True,
+                            'positionIdx': 0,
+                            'category': 'linear'
+                        }
+                    )
+                
+                    logger.info(f"SL/TP orders created via conditional orders for {symbol}")
+                    return True
+                
+                except Exception as e2:
+                    logger.error(f"Fallback SL/TP creation also failed: {e2}")
+                    return False
         
         except Exception as e:
             logger.error(f"Failed to set SL/TP for {symbol}: {e}")
@@ -1161,6 +1181,15 @@ class MLTradingBot:
                                         new_signals_count += 1
                                         self.active_coins.add(signal_data['coin'])
                                         self.active_signals.add(signal_data['signal_id'])
+
+                                        await self.broadcast_to_clients({
+                                            "type": "new_ml_signal",
+                                            "signal": signal_data,
+                                            "ml_prediction": signal_data.get('ml_prediction', 0),
+                                            "model_confidence": signal_data.get('model_confidence', 0),
+                                            "top_features": dict(list(
+                                                signal_data.get('feature_importance', {}).items())[:3])
+                                        })
                                     
                                     logger.warning(f"💰 REAL MONEY TRADE: {signal_data['coin']} "
                                                  f"{signal_data['direction']} at {signal_data['entry_price']}")
