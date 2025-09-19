@@ -244,19 +244,24 @@ class MLTradingBot:
             else:
                 qty_precision = 8
 
-            quantity = position_value / current_price
-            logger.info(f"Calculated quantity: {quantity} (position_value: ${position_value}, price: ${current_price})")
+            # Calculate base quantity from USD value
+            base_quantity = position_value / current_price
+            logger.info(f"Base quantity calculation: ${position_value} / ${current_price} = {base_quantity}")
 
-            # Handle precision properly
+            # Apply precision rules BEFORE min_qty check
             if qty_precision == 0:
-                quantity = int(quantity)
+                quantity = max(int(base_quantity), 1)  # Ensure at least 1 for integer precision
             else:
-                quantity = round(quantity, qty_precision)
-                logger.info(f"After round: quantity={quantity}, type={type(quantity)}")
+                quantity = round(base_quantity, qty_precision)
 
-            # Before max comparison
-            logger.info(f"Before max: quantity={quantity}, min_qty={min_qty}")
-            quantity = max(quantity, min_qty)
+            # Ensure minimum quantity is met
+            if quantity < min_qty:
+                quantity = min_qty
+                logger.info(f"Adjusted to minimum quantity: {quantity}")
+
+            # Verify final position value
+            final_position_value = quantity * current_price
+            logger.info(f"Final position: {quantity} contracts = ${final_position_value:.2f} (target was ${position_value:.2f})")
             logger.info(f"Final quantity: {quantity} (min_qty: {min_qty})")
             
             # Set leverage for the symbol
@@ -336,50 +341,62 @@ class MLTradingBot:
             return False
     
     async def set_sl_tp_orders(self, symbol: str, direction: str, quantity: float, 
-                               stop_loss: float, take_profit: float) -> bool:
+                           stop_loss: float, take_profit: float) -> bool:
         """Set stop loss and take profit orders on Bybit"""
         try:
-            # Stop Loss Order
-            sl_side = 'sell' if direction == 'LONG' else 'buy'
-            sl_order = self.analyzer.exchange.create_order(
-                symbol=symbol,
-                type='stop',
-                side=sl_side,
-                amount=quantity,
-                params={
-                    'positionIdx': 0,
-                    'stopPrice': stop_loss,  # Move stopPrice to params
-                    'triggerPrice': stop_loss,
-                    'triggerDirection': 'below' if direction == 'LONG' else 'above',
-                    'triggerBy': 'LastPrice',
-                    'closeOnTrigger': True,
-                    'reduceOnly': True
-                }
-            )
+            # Get current position to determine position side
+            positions = self.analyzer.exchange.fetch_positions([symbol])
+            position = next((p for p in positions if p['symbol'] == symbol and p['contracts'] > 0), None)
+        
+            if not position:
+                logger.warning(f"No position found for {symbol} to set SL/TP")
+                return False
 
-            # Take Profit Order  
+            # Stop Loss Order (Market order triggered by stop price)
+            sl_side = 'sell' if direction == 'LONG' else 'buy'
+            try:
+                sl_order = self.analyzer.exchange.create_order(
+                    symbol=symbol,
+                    type='market',
+                    side=sl_side,
+                    amount=quantity,
+                    price=None,  # No price for market orders
+                    params={
+                        'stopPrice': stop_loss,
+                        'triggerBy': 'LastPrice',
+                        'closeOnTrigger': True,
+                        'reduceOnly': True,
+                        'positionIdx': 0
+                    }
+                )
+                logger.info(f"Stop Loss set at {stop_loss} for {symbol}")
+            except Exception as e:
+                logger.error(f"Failed to set Stop Loss for {symbol}: {e}")
+
+            # Take Profit Order (Limit order)  
             tp_side = 'sell' if direction == 'LONG' else 'buy'
-            tp_order = self.analyzer.exchange.create_order(
-                symbol=symbol,
-                type='limit',  # Use limit instead of take_profit
-                side=tp_side,
-                amount=quantity,
-                price=take_profit,  # Use price for limit orders
-                params={
-                    'positionIdx': 0,
-                    'triggerPrice': take_profit,
-                    'triggerDirection': 'above' if direction == 'LONG' else 'below',
-                    'triggerBy': 'LastPrice',
-                    'closeOnTrigger': True,
-                    'reduceOnly': True
-                }
-            )
+            try:
+                tp_order = self.analyzer.exchange.create_order(
+                    symbol=symbol,
+                    type='limit',
+                    side=tp_side,
+                    amount=quantity,
+                    price=take_profit,
+                    params={
+                        'closeOnTrigger': True,
+                        'reduceOnly': True,
+                        'positionIdx': 0,
+                        'timeInForce': 'GTC'
+                    }
+                )
+                logger.info(f"Take Profit set at {take_profit} for {symbol}")
+            except Exception as e:
+                logger.error(f"Failed to set Take Profit for {symbol}: {e}")
             
-            logger.info(f"SL/TP set - SL: {stop_loss}, TP: {take_profit}")
             return True
-            
+        
         except Exception as e:
-            logger.error(f"Failed to set SL/TP: {e}")
+            logger.error(f"Failed to set SL/TP for {symbol}: {e}")
             return False
     
     async def close_real_position(self, signal_data: Dict, reason: str) -> bool:
@@ -644,6 +661,10 @@ class MLTradingBot:
                                 pnl_pct = ((entry_price - current_price) / entry_price) * 100 * 10
                             
                             pnl_usd = (pnl_pct / 100) * 1000
+
+                            signal['current_price'] = current_price
+                            signal['live_pnl_usd'] = round(pnl_usd, 2)       # ← Make sure these are added
+                            signal['live_pnl_percentage'] = round(pnl_pct, 2)
                             
                             # Enhanced ML metrics
                             analysis_data = signal.get('analysis_data', {})

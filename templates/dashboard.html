@@ -1513,13 +1513,14 @@
 
         tbody.innerHTML = signals
           .map((signal) => {
-            const pnl = signal.live_pnl_usd || signal.pnl_usd || 0;
-            const pnlPercent =
-              signal.live_pnl_percentage || signal.pnl_percentage || 0;
+            const pnl = signal.live_pnl_usd !== undefined ? signal.live_pnl_usd : 
+            signal.pnl_usd !== undefined ? signal.pnl_usd : 0;
+            const pnlPercent = signal.live_pnl_percentage !== undefined ? signal.live_pnl_percentage :
+                  signal.pnl_percentage !== undefined ? signal.pnl_percentage : 0;
             const tpProgress = signal.tp_progress || 0;
             const mlConfidence = signal.model_confidence || 0;
             const mlPrediction = signal.ml_prediction || 0;
-
+            console.log(`Signal ${signal.coin}: live_pnl_usd=${signal.live_pnl_usd}, pnl_usd=${signal.pnl_usd}, live_pnl_percentage=${signal.live_pnl_percentage}`);
             return `
                     <tr onclick="showChart('${signal.coin}', '${
               signal.signal_id

@@ -1503,7 +1503,14 @@ class MLTradingAnalyzer:
     async def get_current_price(self, symbol: str) -> float:
         """Get current price"""
         try:
-            ticker = self.exchange.fetch_ticker(f"{symbol}/USDT")
+            # Symbol is already in correct format (e.g., TAOUSDT)
+            # Don't append /USDT if it's already a USDT pair
+            if symbol.endswith('USDT') and '/' not in symbol:
+                # This is already in Bybit format (TAOUSDT)
+                ticker = self.exchange.fetch_ticker(symbol)
+            else:
+                # Handle other formats if needed
+                ticker = self.exchange.fetch_ticker(symbol)
             return float(ticker.get('last', 0))
         except Exception as e:
             logger.error(f"Error fetching price for {symbol}: {e}")
