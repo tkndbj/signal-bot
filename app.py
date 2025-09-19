@@ -452,9 +452,15 @@ class MLTradingBot:
                 return False
 
             # Dynamic minimum price difference
-            min_price_diff = max(entry * 0.02, 0.0001)  # Increased to 2% or 0.0001
+            if entry > 100:  # High-value coins
+                min_price_diff = entry * 0.005  # 0.5%
+            elif entry > 1:  # Mid-value coins  
+                min_price_diff = entry * 0.01   # 1%
+            else:  # Low-value coins
+                min_price_diff = entry * 0.015  # 1.5%
+
             if abs(entry - sl) < min_price_diff or abs(tp - entry) < min_price_diff:
-                logger.error(f"Price difference too small: SL={sl}, Entry={entry}, TP={tp}, signal_data: {signal_data}")
+                logger.warning(f"Price difference too small for {signal_data['coin']}: SL={sl:.6f}, Entry={entry:.6f}, TP={tp:.6f}")
                 return False
 
             if direction == 'LONG':

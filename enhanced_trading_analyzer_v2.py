@@ -1230,16 +1230,25 @@ class MLTradingAnalyzer:
             # Fetch symbol info for tick size and minimum price
             try:
                 symbol_info = self.exchange.market(symbol)
-                tick_size = symbol_info['precision']['price']
-                min_price = symbol_info['limits']['price']['min']
+                tick_size = symbol_info['precision']['price'] if symbol_info else 0.00001
+                min_price = symbol_info['limits']['price']['min'] if symbol_info and symbol_info['limits']['price'] else 0.0000001
+    
+                # Ensure min_price is not None
+                if min_price is None:
+                    min_price = 0.0000001
+        
             except Exception as e:
-                logger.error(f"Failed to fetch symbol info for {symbol}: {e}")
-                return None
+                logger.warning(f"Failed to fetch symbol info for {symbol}: {e}, using defaults")
+                tick_size = 0.00001
+                min_price = 0.0000001
         
             # Ensure current price is valid
-            if current_price <= 0 or current_price < min_price:
+            if current_price <= 0:
                 logger.error(f"Invalid current price for {symbol}: {current_price}")
                 return None
+    
+            if min_price and current_price < min_price:
+                logger.warning(f"Price below minimum for {symbol}: {current_price} < {min_price}")
         
             # Determine direction
             direction = 'LONG' if prediction > 0 else 'SHORT'
