@@ -453,7 +453,7 @@ class MLEnhancedDatabase:
                     take_profit, stop_loss, confidence, analysis_data, indicators, 
                     ml_prediction, model_confidence, feature_importance, model_type,
                     prediction_horizon, feature_count, orthogonality_score, status, position_value
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     signal_data['signal_id'],
                     signal_data['timestamp'],

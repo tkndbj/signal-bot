@@ -153,6 +153,8 @@ class MLTradingBot:
             
             if stale_signals:
                 logger.info(f"ML cleanup: Removed {len(stale_signals)} stale signals")
+
+            asyncio.create_task(self.sync_bybit_positions_on_startup())
             
             # Initialize ML-specific tracking
             self.initialize_ml_tracking()
@@ -197,6 +199,39 @@ class MLTradingBot:
         except Exception as e:
             logger.error(f"Error fetching balance: {e}")
             return {'free': 0, 'used': 0, 'total': 0}
+
+    async def sync_bybit_positions_on_startup(self):
+        """Sync existing Bybit positions with database on startup"""
+        try:
+            # Get all open positions from Bybit
+            positions = self.analyzer.exchange.fetch_positions(params={'category': 'linear'})
+        
+            for pos in positions:
+                if pos['contracts'] > 0:  # Has an open position
+                    symbol = pos['symbol']
+                
+                    # Check if already in database
+                    existing = self.database.get_signal_by_coin(symbol)
+                    if not existing:
+                        # Create a signal entry for this orphaned position
+                        signal_data = {
+                            'signal_id': f"SYNC_{symbol}_{int(time.time())}",
+                            'timestamp': datetime.now().isoformat(),
+                            'coin': symbol,
+                            'direction': 'LONG' if pos['side'] == 'long' else 'SHORT',
+                            'entry_price': pos['markPrice'],  # or pos['entryPrice'] if available
+                            'take_profit': pos.get('takeProfit', pos['markPrice'] * 1.02),
+                            'stop_loss': pos.get('stopLoss', pos['markPrice'] * 0.98),
+                            'confidence': 75,  # Default confidence
+                            'position_value': pos['contracts'] * pos['markPrice'],
+                            'analysis_data': {'synced_from_exchange': True}
+                        }
+                    
+                        self.database.save_signal(signal_data)
+                        logger.info(f"Synced orphaned position: {symbol}")
+                    
+        except Exception as e:
+            logger.error(f"Failed to sync Bybit positions: {e}")
     
     
     async def execute_real_trade(self, signal_data: Dict) -> bool:
