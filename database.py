@@ -504,34 +504,54 @@ class MLEnhancedDatabase:
             return False
     
     def save_ml_prediction(self, signal_data: Dict) -> bool:
-        """Save ML prediction for tracking"""
-        try:
-            with self.get_db_connection() as conn:
-                cursor = conn.cursor()
+        """Save ML prediction for tracking with better error handling"""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                with self.get_db_connection() as conn:
+                    cursor = conn.cursor()
                 
-                feature_importance = signal_data.get('feature_importance', {})
-                shap_values = signal_data.get('shap_importance', {})
+                    # Check if prediction already exists
+                    cursor.execute('''
+                        SELECT id FROM ml_predictions WHERE signal_id = ?
+                    ''', (signal_data['signal_id'],))
                 
-                cursor.execute('''
-                INSERT INTO ml_predictions (
-                    signal_id, coin, prediction_value, model_confidence, model_type,
-                    feature_importance, shap_values
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    signal_data['signal_id'],
-                    signal_data['coin'],
-                    signal_data.get('ml_prediction', 0),
-                    signal_data.get('model_confidence', 0),
-                    signal_data.get('analysis_data', {}).get('model_type', 'unknown'),
-                    json.dumps(feature_importance),
-                    json.dumps(shap_values)
-                ))
+                    if cursor.fetchone():
+                        logger.debug(f"ML prediction already exists for {signal_data['signal_id']}")
+                        return True
                 
-                return True
+                    feature_importance = signal_data.get('feature_importance', {})
+                    shap_values = signal_data.get('shap_importance', {})
                 
-        except Exception as e:
-            logger.error(f"Error saving ML prediction: {e}")
-            return False
+                    cursor.execute('''
+                    INSERT INTO ml_predictions (
+                        signal_id, coin, prediction_value, model_confidence, model_type,
+                        feature_importance, shap_values
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        signal_data['signal_id'],
+                        signal_data['coin'],
+                        signal_data.get('ml_prediction', 0),
+                        signal_data.get('model_confidence', 0),
+                        signal_data.get('analysis_data', {}).get('model_type', 'unknown'),
+                        json.dumps(feature_importance),
+                        json.dumps(shap_values)
+                    ))
+                
+                    return True
+                
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                else:
+                    logger.error(f"Database locked after {max_retries} attempts: {e}")
+                    return False
+            except Exception as e:
+                logger.error(f"Error saving ML prediction: {e}")
+                return False
+    
+        return False
     
     def save_ml_model(self, coin: str, model_data: Dict) -> bool:
         """Save ML model and associated data"""
@@ -907,19 +927,72 @@ class MLEnhancedDatabase:
             return 0.0
     
     def log_model_performance(self, coin: str, accuracy: float, confidence: float):
-        """Log model performance for tracking"""
+        """Log model performance with retry logic"""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                with self.get_db_connection() as conn:
+                    cursor = conn.cursor()
+                
+                    # Use INSERT OR IGNORE to prevent duplicates
+                    cursor.execute('''
+                    INSERT OR IGNORE INTO model_performance_history (
+                        coin, model_type, accuracy, avg_confidence, prediction_count, timestamp
+                    ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ''', (coin, 'ml_ensemble', accuracy if not np.isnan(accuracy) else 0, 
+                        confidence if not np.isnan(confidence) else 0, 1))
+                
+                    return
+                
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                else:
+                    logger.error(f"Database locked logging performance: {e}")
+                    return
+            except Exception as e:
+                logger.error(f"Error logging model performance: {e}")
+                return
+
+    def get_signal_by_coin(self, coin: str) -> Optional[Dict]:
+        """Get active signal for a specific coin"""
         try:
             with self.get_db_connection() as conn:
                 cursor = conn.cursor()
-                
-                cursor.execute('''
-                INSERT INTO model_performance_history (
-                    coin, model_type, accuracy, avg_confidence, prediction_count
-                ) VALUES (?, ?, ?, ?, ?)
-                ''', (coin, 'ml_ensemble', accuracy, confidence, 1))
-                
+            
+                # Handle different coin formats
+                coin_variants = [coin, coin.replace('USDT', ''), coin + 'USDT']
+            
+                query = '''
+                SELECT s.*, tr.pnl_usd, tr.pnl_percentage 
+                FROM signals s
+                LEFT JOIN trade_results tr ON s.signal_id = tr.signal_id
+                WHERE s.status = 'active' 
+                AND s.coin IN ({})
+                LIMIT 1
+                '''.format(','.join(['?' for _ in coin_variants]))
+            
+                cursor.execute(query, coin_variants)
+            
+                row = cursor.fetchone()
+                if row:
+                    signal_dict = dict(row)
+                    try:
+                        signal_dict['analysis_data'] = json.loads(signal_dict['analysis_data'] or '{}')
+                        signal_dict['indicators'] = json.loads(signal_dict['indicators'] or '{}')
+                        signal_dict['feature_importance'] = json.loads(signal_dict['feature_importance'] or '{}')
+                    except:
+                        signal_dict['analysis_data'] = {}
+                        signal_dict['indicators'] = {}
+                        signal_dict['feature_importance'] = {}
+                    return signal_dict
+            
+                return None
+            
         except Exception as e:
-            logger.error(f"Error logging model performance: {e}")
+            logger.error(f"Error getting signal by coin {coin}: {e}")
+            return None
     
     def get_ml_model_stats(self, coin: str = None) -> Dict:
         """Get ML model statistics"""

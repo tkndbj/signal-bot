@@ -245,90 +245,222 @@ class MLTradingBot:
 
 
     async def sync_active_positions_with_exchange(self):
-        """Synchronize database with actual Bybit positions"""
+        """Synchronize database with actual Bybit positions - PRODUCTION GRADE"""
         try:
             # Get all positions from Bybit
             positions = self.analyzer.exchange.fetch_positions(params={'category': 'linear'})
-            
-            # Create a set of symbols that have open positions on Bybit
-            open_positions_on_bybit = set()
+        
+            # Create a map of open positions on Bybit
+            open_positions_on_bybit = {}
             for pos in positions:
                 if pos['contracts'] > 0:  # Has an open position
-                    open_positions_on_bybit.add(pos['symbol'])
-            
+                    symbol = pos['symbol']
+                    open_positions_on_bybit[symbol] = {
+                        'contracts': pos['contracts'],
+                        'side': pos['side'],
+                        'unrealizedPnl': pos.get('unrealizedPnl', 0),
+                        'markPrice': pos.get('markPrice', 0),
+                        'entryPrice': pos.get('avgPrice', pos.get('markPrice', 0))
+                    }
+                    logger.info(f"Bybit position found: {symbol} - {pos['contracts']} contracts")
+        
             # Get active signals from database
             active_signals = self.database.get_active_signals()
-            
-            # Check each active signal
+        
+            # Track which signals to close
+            signals_to_close = []
+        
             for signal in active_signals:
                 symbol = signal['coin']
-                
-                # If signal is marked as active but no position on Bybit, it was closed
+            
+                # CRITICAL: Handle different symbol formats
+                if not symbol.endswith('USDT'):
+                    symbol = f"{symbol}USDT"
+            
                 if symbol not in open_positions_on_bybit:
-                    logger.warning(f"Signal {signal['signal_id']} for {symbol} not found on Bybit - closing")
-                    
-                    # Get current price for exit
-                    try:
-                        ticker = self.analyzer.exchange.fetch_ticker(symbol)
-                        exit_price = ticker['last']
-                    except:
-                        exit_price = signal.get('current_price', signal['entry_price'])
-                    
-                    # Determine exit reason based on price
+                    # Signal is in DB but not on Bybit - it was closed
+                    logger.warning(f"Signal {signal['signal_id']} for {symbol} not found on Bybit")
+                
+                    # Don't immediately close - double check
+                    await asyncio.sleep(1)
+                    positions_recheck = self.analyzer.exchange.fetch_positions([symbol], params={'category': 'linear'})
+                
+                    still_not_found = True
+                    for pos in positions_recheck:
+                        if pos['symbol'] == symbol and pos['contracts'] > 0:
+                            still_not_found = False
+                            logger.info(f"Position {symbol} found on recheck")
+                            break
+                
+                    if still_not_found:
+                        signals_to_close.append(signal)
+                else:
+                    # Update position value in database
+                    bybit_pos = open_positions_on_bybit[symbol]
+                    position_value = bybit_pos['contracts'] * bybit_pos['markPrice']
+                
+                    with self.database.get_db_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute('''
+                            UPDATE signals 
+                            SET position_value = ?, current_price = ?
+                            WHERE signal_id = ? AND status = 'active'
+                        ''', (position_value, bybit_pos['markPrice'], signal['signal_id']))
+                
+                    logger.debug(f"Updated {symbol} position value: ${position_value:.2f}")
+        
+            # Close signals that are no longer on Bybit
+            for signal in signals_to_close:
+                symbol = signal['coin']
+                # Ensure correct symbol format
+                if not symbol.endswith('USDT'):
+                    symbol = f"{symbol}USDT"
+    
+                try:
+                    # Get current price for exit - use correct symbol
+                    ticker = self.analyzer.exchange.fetch_ticker(symbol)
+                    exit_price = ticker['last']
+                except:
+                    exit_price = signal.get('current_price', signal['entry_price'])
+            
+                # Determine exit reason
+                bybit_pos = open_positions_on_bybit.get(symbol, {})
+                unrealized_pnl = bybit_pos.get('unrealizedPnl', 0)
+            
+                if unrealized_pnl > 0:
+                    exit_reason = "Take Profit Hit (Bybit)"
+                elif unrealized_pnl < 0:
+                    exit_reason = "Stop Loss Hit (Bybit)"  
+                else:
+                    exit_reason = "Position Closed on Exchange"
+            
+                # Close in database with proper P&L
+                self.database.close_signal(signal['signal_id'], exit_price, exit_reason)
+                self.active_signals.discard(signal['signal_id'])
+                self.active_coins.discard(signal['coin'])
+            
+                # Calculate and log P&L
+                position_value = signal.get('position_value', 0)
+                if position_value > 0:
                     if signal['direction'] == 'LONG':
-                        if exit_price >= signal['take_profit'] * 0.99:
-                            exit_reason = "Take Profit Hit (Bybit)"
-                        elif exit_price <= signal['stop_loss'] * 1.01:
-                            exit_reason = "Stop Loss Hit (Bybit)"
-                        else:
-                            exit_reason = "Position Closed on Exchange"
-                    else:  # SHORT
-                        if exit_price <= signal['take_profit'] * 1.01:
-                            exit_reason = "Take Profit Hit (Bybit)"
-                        elif exit_price >= signal['stop_loss'] * 0.99:
-                            exit_reason = "Stop Loss Hit (Bybit)"
-                        else:
-                            exit_reason = "Position Closed on Exchange"
-                    
-                    # Close in database
-                    self.database.close_signal(signal['signal_id'], exit_price, exit_reason)
-                    self.active_signals.discard(signal['signal_id'])
-                    self.active_coins.discard(symbol)
-                    
-                    # Calculate P&L for logging
-                    position_value = signal.get('position_value')
-                    if not position_value:
-                        position_value = signal.get('analysis_data', {}).get('position_value', 0)
-                    
-                    if position_value > 0:
-                        if signal['direction'] == 'LONG':
-                            pnl_pct = ((exit_price - signal['entry_price']) / signal['entry_price']) * 100 * 15
-                        else:
-                            pnl_pct = ((signal['entry_price'] - exit_price) / signal['entry_price']) * 100 * 15
-                        pnl_usd = (pnl_pct / 100) * position_value
+                        pnl_pct = ((exit_price - signal['entry_price']) / signal['entry_price']) * 100 * 15
                     else:
-                        pnl_usd = 0
-                        pnl_pct = 0
-                    
-                    # Broadcast closure
-                    await self.broadcast_to_clients({
-                        "type": "ml_signal_closed",
-                        "signal_id": signal['signal_id'],
-                        "coin": signal['coin'],
-                        "direction": signal['direction'],
-                        "exit_reason": exit_reason,
-                        "pnl_usd": round(pnl_usd, 2),
-                        "pnl_percentage": round(pnl_pct, 2),
-                        "exit_price": exit_price
-                    })
-                    
-                    logger.info(f"Synced closed position: {symbol} - {exit_reason} - P&L: ${pnl_usd:.2f}")
+                        pnl_pct = ((signal['entry_price'] - exit_price) / signal['entry_price']) * 100 * 15
+                    pnl_usd = (pnl_pct / 100) * position_value
+                else:
+                    pnl_usd = unrealized_pnl if unrealized_pnl else 0
+                    pnl_pct = 0
             
+                logger.info(f"Synced closed position: {signal['coin']} - {exit_reason} - P&L: ${pnl_usd:.2f}")
+            
+                # Broadcast closure
+                await self.broadcast_to_clients({
+                    "type": "ml_signal_closed",
+                    "signal_id": signal['signal_id'],
+                    "coin": signal['coin'],
+                    "direction": signal['direction'],
+                    "exit_reason": exit_reason,
+                    "pnl_usd": round(pnl_usd, 2),
+                    "pnl_percentage": round(pnl_pct, 2),
+                    "exit_price": exit_price
+                })
+        
+            # Check for orphaned positions (on Bybit but not in DB)
+            for symbol, pos_data in open_positions_on_bybit.items():
+                found_in_db = False
+                for signal in active_signals:
+                    signal_symbol = signal['coin']
+                    if not signal_symbol.endswith('USDT'):
+                        signal_symbol = f"{signal_symbol}USDT"
+                    if signal_symbol == symbol:
+                        found_in_db = True
+                        break
+            
+                if not found_in_db:
+                    logger.warning(f"Orphaned position found on Bybit: {symbol}")
+                    # Create a signal entry for tracking
+                    signal_data = {
+                        'signal_id': f"ORPHAN_{symbol}_{int(time.time())}",
+                        'timestamp': datetime.now().isoformat(),
+                        'coin': symbol.replace('USDT', ''),
+                        'direction': 'LONG' if pos_data['side'] == 'long' else 'SHORT',
+                        'entry_price': pos_data['entryPrice'],
+                        'take_profit': pos_data['entryPrice'] * 1.02,
+                        'stop_loss': pos_data['entryPrice'] * 0.98,
+                        'confidence': 50,
+                        'position_value': pos_data['contracts'] * pos_data['markPrice'],
+                        'analysis_data': {'orphaned_position': True, 'synced_from_exchange': True}
+                    }
+                    self.database.save_signal(signal_data)
+                    logger.info(f"Created tracking entry for orphaned position: {symbol}")
+        
             return open_positions_on_bybit
-            
+        
         except Exception as e:
             logger.error(f"Error syncing positions with exchange: {e}")
-            return set()
+            return {}
+
+    async def position_recovery_check(self):
+        """Periodic position recovery to ensure sync is never lost"""
+        while self.running:
+            try:
+                await asyncio.sleep(30)  # Check every 30 seconds
+            
+                if self.is_scanning:
+                    continue
+            
+                # Get all Bybit positions
+                all_positions = self.analyzer.exchange.fetch_positions(params={'category': 'linear'})
+            
+                for pos in all_positions:
+                    if pos['contracts'] > 0:
+                        symbol = pos['symbol']
+                    
+                        # Check if we're tracking this position
+                        tracked = False
+                        active_signals = self.database.get_active_signals()
+                    
+                        for signal in active_signals:
+                            signal_symbol = signal['coin']
+                            if not signal_symbol.endswith('USDT'):
+                                signal_symbol = f"{signal_symbol}USDT"
+                            if signal_symbol == symbol:
+                                tracked = True
+                                break
+                    
+                        if not tracked:
+                            logger.warning(f"Untracked position detected: {symbol}")
+                        
+                            # Create emergency tracking entry
+                            signal_data = {
+                                'signal_id': f"RECOVERY_{symbol}_{int(time.time())}",
+                                'timestamp': datetime.now().isoformat(),
+                                'coin': symbol.replace('USDT', ''),
+                                'direction': 'LONG' if pos['side'] == 'long' else 'SHORT',
+                                'entry_price': pos.get('avgPrice', pos['markPrice']),
+                                'current_price': pos['markPrice'],
+                                'take_profit': pos['markPrice'] * 1.03,
+                                'stop_loss': pos['markPrice'] * 0.97,
+                                'confidence': 50,
+                                'position_value': pos['contracts'] * pos['markPrice'],
+                                'analysis_data': {
+                                    'recovered_position': True,
+                                    'contracts': pos['contracts'],
+                                    'unrealized_pnl': pos.get('unrealizedPnl', 0)
+                                }
+                            }
+                        
+                            self.database.save_signal(signal_data)
+                            logger.info(f"Recovered untracked position: {symbol}")
+                        
+                            await self.broadcast_to_clients({
+                                "type": "position_recovered",
+                                "symbol": symbol,
+                                "message": f"Recovered untracked position for {symbol}"
+                            })
+            
+            except Exception as e:
+                logger.error(f"Error in position recovery: {e}")
     
     
     async def execute_real_trade(self, signal_data: Dict) -> bool:
@@ -474,9 +606,17 @@ class MLTradingBot:
                 signal_data['executed_quantity'] = quantity
                 signal_data['position_value'] = final_position_value
 
+                with self.database.get_db_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        UPDATE signals 
+                        SET position_value = ? 
+                        WHERE signal_id = ?
+                    ''', (final_position_value, signal_data['signal_id']))
+
                 if 'analysis_data' not in signal_data:
                     signal_data['analysis_data'] = {}
-                signal_data['analysis_data']['position_value'] = final_position_value
+                signal_data['analysis_data']['position_value'] = final_position_value                
                 
                 return True
             else:
@@ -488,15 +628,37 @@ class MLTradingBot:
             return False
     
     async def set_sl_tp_orders(self, symbol: str, direction: str, quantity: float, 
-                           stop_loss: float, take_profit: float) -> bool:
+                            stop_loss: float, take_profit: float) -> bool:
         """Set stop loss and take profit orders on Bybit using V5 API for UTA"""
         try:
-            # Wait for position to be registered
-            await asyncio.sleep(3)
+            # Wait for position to be fully registered
+            await asyncio.sleep(5)  # Increased from 3
         
-            # For UTA, use the set_trading_stop endpoint instead of creating separate orders
+            # First verify position exists
+            positions = self.analyzer.exchange.fetch_positions([symbol], params={'category': 'linear'})
+            position_exists = False
+            for pos in positions:
+                if pos['symbol'] == symbol and pos['contracts'] > 0:
+                    position_exists = True
+                    break
+        
+            if not position_exists:
+                logger.warning(f"Position not found for {symbol}, retrying...")
+                await asyncio.sleep(3)
+                # Try once more
+                positions = self.analyzer.exchange.fetch_positions([symbol], params={'category': 'linear'})
+                for pos in positions:
+                    if pos['symbol'] == symbol and pos['contracts'] > 0:
+                        position_exists = True
+                        break
+        
+            if not position_exists:
+                logger.error(f"No position found for {symbol} after retries")
+                return False
+        
+            # Try setting SL/TP with better error handling
             try:
-                # Use the V5 API set_trading_stop method
+                # Method 1: Using set_trading_stop endpoint
                 response = self.analyzer.exchange.privatePostV5PositionTradingStop({
                     'category': 'linear',
                     'symbol': symbol,
@@ -504,70 +666,69 @@ class MLTradingBot:
                     'takeProfit': str(take_profit),
                     'tpTriggerBy': 'LastPrice',
                     'slTriggerBy': 'LastPrice',
-                    'tpslMode': 'Full',  # Apply to full position
-                    'positionIdx': 0      # One-way mode
+                    'tpslMode': 'Full',
+                    'positionIdx': 0
                 })
             
-                if response and str(response.get('retCode')) == '0':
-                    logger.info(f"SL/TP set successfully for {symbol} - SL: {stop_loss}, TP: {take_profit}")
+                if response and (str(response.get('retCode')) == '0' or response.get('retMsg') == 'OK'):
+                    logger.info(f"SL/TP set successfully for {symbol}")
                     return True
-                else:
-                    if response and response.get('retMsg') == 'OK':
-                        logger.info(f"SL/TP set successfully for {symbol} (OK response) - SL: {stop_loss}, TP: {take_profit}")
-                        return True
-                    else:
-                        logger.error(f"Failed to set SL/TP: {response}")
-                        return False
+            
+                # Check for "not modified" which means SL/TP already exists
+                if response and response.get('retCode') == 34040:
+                    logger.info(f"SL/TP already exists for {symbol}")
+                    return True
                 
             except Exception as e:
-                logger.error(f"Error setting SL/TP via trading-stop: {e}")
-            
-                # Fallback: Try using conditional orders
-                try:
-                    # Stop Loss Order
-                    sl_side = 'Sell' if direction == 'LONG' else 'Buy'
-                    sl_response = self.analyzer.exchange.create_order(
-                        symbol=symbol,
-                        type='market',
-                        side=sl_side,
-                        amount=quantity,
-                        params={
-                            'stopLoss': str(stop_loss),
-                            'triggerBy': 'LastPrice',
-                            'reduceOnly': True,
-                            'closeOnTrigger': True,
-                            'positionIdx': 0,
-                            'category': 'linear'
-                        }
-                    )
-                
-                    # Take Profit Order
-                    tp_side = 'Sell' if direction == 'LONG' else 'Buy'
-                    tp_response = self.analyzer.exchange.create_order(
-                        symbol=symbol,
-                        type='limit',
-                        side=tp_side,
-                        amount=quantity,
-                        price=take_profit,
-                        params={
-                            'takeProfit': str(take_profit),
-                            'triggerBy': 'LastPrice',
-                            'reduceOnly': True,
-                            'closeOnTrigger': True,
-                            'positionIdx': 0,
-                            'category': 'linear'
-                        }
-                    )
-                
-                    logger.info(f"SL/TP orders created via conditional orders for {symbol}")
-                    return True
-                
-                except Exception as e2:
-                    logger.error(f"Fallback SL/TP creation also failed: {e2}")
-                    return False
+                logger.warning(f"Primary SL/TP method failed: {e}")
         
+            # Method 2: Try conditional orders as fallback
+            try:
+                # Stop Loss
+                sl_side = 'sell' if direction == 'LONG' else 'buy'
+                sl_order = self.analyzer.exchange.create_order(
+                    symbol=symbol,
+                    type='market',
+                    side=sl_side,
+                    amount=quantity,
+                    params={
+                        'stopPrice': stop_loss,
+                        'triggerPrice': stop_loss,
+                        'triggerBy': 'LastPrice',
+                        'orderType': 'Market',
+                        'reduceOnly': True,
+                        'closeOnTrigger': True,
+                        'category': 'linear'
+                    }
+                )
+            
+                # Take Profit  
+                tp_side = 'sell' if direction == 'LONG' else 'buy'
+                tp_order = self.analyzer.exchange.create_order(
+                    symbol=symbol,
+                    type='limit',
+                    side=tp_side,
+                    amount=quantity,
+                    price=take_profit,
+                    params={
+                        'triggerPrice': take_profit,
+                        'triggerBy': 'LastPrice',
+                        'reduceOnly': True,
+                        'closeOnTrigger': True,
+                        'category': 'linear'
+                    }
+                )
+            
+                logger.info(f"Conditional SL/TP orders created for {symbol}")
+                return True
+            
+            except Exception as e:
+                logger.error(f"All SL/TP methods failed for {symbol}: {e}")
+                # Continue anyway - position is open but without SL/TP
+                return False
+            
         except Exception as e:
-            logger.error(f"Failed to set SL/TP for {symbol}: {e}")
+            logger.error(f"Critical error setting SL/TP for {symbol}: {e}")
             return False
     
     async def close_real_position(self, signal_data: Dict, reason: str) -> bool:
@@ -2582,15 +2743,30 @@ app = get_ml_bot().app
 
 @app.on_event("startup")
 async def startup_event():
-    """Start ML bot on server startup"""
+    """Start ML bot on server startup with enhanced recovery"""
     bot = get_ml_bot()
     if not bot.running:
         bot.running = True
+        
+        # Core cycles
         asyncio.create_task(bot.ml_scan_cycle())
         asyncio.create_task(bot.ml_retrain_cycle())
         asyncio.create_task(bot.position_monitoring_cycle())
         asyncio.create_task(bot.exchange_sync_cycle())
-        logger.info("ML trading bot auto-started with advanced features")
+        
+        # Add recovery system
+        asyncio.create_task(bot.position_recovery_check())
+        
+        # Initial sync after 5 seconds
+        async def delayed_initial_sync():
+            await asyncio.sleep(5)
+            logger.info("Running initial position sync...")
+            await bot.sync_bybit_positions_on_startup()
+            await bot.sync_active_positions_with_exchange()
+        
+        asyncio.create_task(delayed_initial_sync())
+        
+        logger.info("ML trading bot auto-started with enhanced recovery system")
 
 @app.on_event("shutdown")
 async def shutdown_event():
