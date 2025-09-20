@@ -249,7 +249,7 @@ class MLTradingBot:
         try:
             # Get all positions from Bybit
             positions = self.analyzer.exchange.fetch_positions(params={'category': 'linear'})
-        
+    
             # Create a map of open positions on Bybit
             open_positions_on_bybit = {}
             for pos in positions:
@@ -263,40 +263,68 @@ class MLTradingBot:
                         'entryPrice': pos.get('avgPrice', pos.get('markPrice', 0))
                     }
                     logger.info(f"Bybit position found: {symbol} - {pos['contracts']} contracts")
-        
+    
             # Get active signals from database
             active_signals = self.database.get_active_signals()
-        
+    
             # Track which signals to close
             signals_to_close = []
-        
+    
             for signal in active_signals:
-                symbol = signal['coin']
+                # Extract clean coin name from database
+                coin_name = signal['coin'].replace('/', '').replace(':', '').replace('USDT', '')
             
-                # CRITICAL: Handle different symbol formats
-                if not symbol.endswith('USDT'):
-                    symbol = f"{symbol}USDT"
+                # Find matching position in Bybit positions
+                found = False
+                matching_symbol = None
             
-                if symbol not in open_positions_on_bybit:
-                    # Signal is in DB but not on Bybit - it was closed
-                    logger.warning(f"Signal {signal['signal_id']} for {symbol} not found on Bybit")
+                for bybit_symbol in open_positions_on_bybit.keys():
+                    # Check if this Bybit position matches our signal
+                    # Handle formats like "NEAR/USDT:USDT" or "NEARUSDT"
+                    if '/' in bybit_symbol:
+                        bybit_coin = bybit_symbol.split('/')[0]
+                    else:
+                        bybit_coin = bybit_symbol.replace('USDT', '')
                 
-                    # Don't immediately close - double check
+                    if bybit_coin == coin_name:
+                        found = True
+                        matching_symbol = bybit_symbol
+                        break
+            
+                if not found:
+                    # Signal is in DB but not on Bybit - it was closed
+                    logger.warning(f"Signal {signal['signal_id']} for {signal['coin']} not found on Bybit")
+                
+                    # Don't immediately close - double check with specific symbol
                     await asyncio.sleep(1)
-                    positions_recheck = self.analyzer.exchange.fetch_positions([symbol], params={'category': 'linear'})
+                
+                    # Try to fetch with different symbol formats
+                    symbols_to_check = [
+                        f"{coin_name}USDT",
+                        f"{coin_name}/USDT",
+                        f"{coin_name}/USDT:USDT"
+                    ]
                 
                     still_not_found = True
-                    for pos in positions_recheck:
-                        if pos['symbol'] == symbol and pos['contracts'] > 0:
-                            still_not_found = False
-                            logger.info(f"Position {symbol} found on recheck")
+                    for check_symbol in symbols_to_check:
+                        try:
+                            positions_recheck = self.analyzer.exchange.fetch_positions([check_symbol], params={'category': 'linear'})
+                            for pos in positions_recheck:
+                                if pos['contracts'] > 0:
+                                    still_not_found = False
+                                    logger.info(f"Position {check_symbol} found on recheck")
+                                    break
+                        except:
+                            continue
+                    
+                        if not still_not_found:
                             break
                 
                     if still_not_found:
                         signals_to_close.append(signal)
                 else:
                     # Update position value in database
-                    bybit_pos = open_positions_on_bybit[symbol]
+                    bybit_pos = open_positions_on_bybit[matching_symbol]
                     position_value = bybit_pos['contracts'] * bybit_pos['markPrice']
                 
                     with self.database.get_db_connection() as conn:
@@ -307,25 +335,26 @@ class MLTradingBot:
                             WHERE signal_id = ? AND status = 'active'
                         ''', (position_value, bybit_pos['markPrice'], signal['signal_id']))
                 
-                    logger.debug(f"Updated {symbol} position value: ${position_value:.2f}")
-        
+                    logger.debug(f"Updated {signal['coin']} position value: ${position_value:.2f}")
+    
             # Close signals that are no longer on Bybit
             for signal in signals_to_close:
-                symbol = signal['coin']
-                # Ensure correct symbol format
-                if not symbol.endswith('USDT'):
-                    symbol = f"{symbol}USDT"
-    
+                coin_name = signal['coin'].replace('/', '').replace(':', '').replace('USDT', '')
+                symbol = f"{coin_name}USDT"
+            
                 try:
-                    # Get current price for exit - use correct symbol
+                    # Get current price for exit
                     ticker = self.analyzer.exchange.fetch_ticker(symbol)
                     exit_price = ticker['last']
                 except:
                     exit_price = signal.get('current_price', signal['entry_price'])
             
                 # Determine exit reason
-                bybit_pos = open_positions_on_bybit.get(symbol, {})
-                unrealized_pnl = bybit_pos.get('unrealizedPnl', 0)
+                unrealized_pnl = 0
+                for bybit_symbol, pos_data in open_positions_on_bybit.items():
+                    if coin_name in bybit_symbol:
+                        unrealized_pnl = pos_data.get('unrealizedPnl', 0)
+                        break
             
                 if unrealized_pnl > 0:
                     exit_reason = "Take Profit Hit (Bybit)"
@@ -364,15 +393,19 @@ class MLTradingBot:
                     "pnl_percentage": round(pnl_pct, 2),
                     "exit_price": exit_price
                 })
-        
+    
             # Check for orphaned positions (on Bybit but not in DB)
             for symbol, pos_data in open_positions_on_bybit.items():
+                # Extract clean coin name from Bybit symbol
+                if '/' in symbol:
+                    coin_name = symbol.split('/')[0]
+                else:
+                    coin_name = symbol.replace('USDT', '')
+            
                 found_in_db = False
                 for signal in active_signals:
-                    signal_symbol = signal['coin']
-                    if not signal_symbol.endswith('USDT'):
-                        signal_symbol = f"{signal_symbol}USDT"
-                    if signal_symbol == symbol:
+                    signal_coin = signal['coin'].replace('/', '').replace(':', '').replace('USDT', '')
+                    if signal_coin == coin_name:
                         found_in_db = True
                         break
             
@@ -380,9 +413,9 @@ class MLTradingBot:
                     logger.warning(f"Orphaned position found on Bybit: {symbol}")
                     # Create a signal entry for tracking
                     signal_data = {
-                        'signal_id': f"ORPHAN_{symbol}_{int(time.time())}",
+                        'signal_id': f"ORPHAN_{coin_name}_{int(time.time())}",
                         'timestamp': datetime.now().isoformat(),
-                        'coin': symbol.split('/')[0] if '/' in symbol else symbol.replace('USDT', ''),
+                        'coin': coin_name,
                         'direction': 'LONG' if pos_data['side'] == 'long' else 'SHORT',
                         'entry_price': pos_data['entryPrice'],
                         'take_profit': pos_data['entryPrice'] * 1.02,
@@ -393,9 +426,9 @@ class MLTradingBot:
                     }
                     self.database.save_signal(signal_data)
                     logger.info(f"Created tracking entry for orphaned position: {symbol}")
-        
+    
             return open_positions_on_bybit
-        
+    
         except Exception as e:
             logger.error(f"Error syncing positions with exchange: {e}")
             return {}
