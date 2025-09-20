@@ -227,7 +227,7 @@ class MLTradingBot:
                         signal_data = {
                             'signal_id': f"SYNC_{symbol}_{int(time.time())}",
                             'timestamp': datetime.now().isoformat(),
-                            'coin': symbol,
+                            'coin': symbol.split('/')[0] if '/' in symbol else symbol.replace('USDT', ''),
                             'direction': 'LONG' if pos['side'] == 'long' else 'SHORT',
                             'entry_price': pos['markPrice'],  # or pos['entryPrice'] if available
                             'take_profit': pos.get('takeProfit', pos['markPrice'] * 1.02),
@@ -382,7 +382,7 @@ class MLTradingBot:
                     signal_data = {
                         'signal_id': f"ORPHAN_{symbol}_{int(time.time())}",
                         'timestamp': datetime.now().isoformat(),
-                        'coin': symbol.replace('USDT', ''),
+                        'coin': symbol.split('/')[0] if '/' in symbol else symbol.replace('USDT', ''),
                         'direction': 'LONG' if pos_data['side'] == 'long' else 'SHORT',
                         'entry_price': pos_data['entryPrice'],
                         'take_profit': pos_data['entryPrice'] * 1.02,
@@ -435,7 +435,7 @@ class MLTradingBot:
                             signal_data = {
                                 'signal_id': f"RECOVERY_{symbol}_{int(time.time())}",
                                 'timestamp': datetime.now().isoformat(),
-                                'coin': symbol.replace('USDT', ''),
+                                'coin': symbol.split('/')[0] if '/' in symbol else symbol.replace('USDT', ''),
                                 'direction': 'LONG' if pos['side'] == 'long' else 'SHORT',
                                 'entry_price': pos.get('avgPrice', pos['markPrice']),
                                 'current_price': pos['markPrice'],
