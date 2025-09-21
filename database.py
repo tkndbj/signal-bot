@@ -405,7 +405,7 @@ class Database:
                       duration_minutes, signal_id))
                 
                 # Update portfolio
-                self._update_portfolio(conn, pnl_usd)
+                self._update_portfolio(conn, pnl_usd)                
                 
                 logger.info(f"Signal closed: {signal_id} - P&L: ${pnl_usd:.2f}")
                 return True

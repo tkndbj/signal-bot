@@ -49,6 +49,8 @@ class TradingBot:
         self.position_size_percent = 0.15  # Use 15% of balance
         self.leverage = 15
         self.min_confidence_threshold = 0.65
+        self.model_update_interval = 3600  # Update models every hour
+        self.last_model_update = time.time()
         
         # FastAPI setup
         self.app = FastAPI(
@@ -825,6 +827,12 @@ class TradingBot:
                     "scan_count": self.scan_count,
                     "duration": scan_duration
                 })
+
+                # Check if models need updating
+                current_time = time.time()
+                if current_time - self.last_model_update > self.model_update_interval:
+                    asyncio.create_task(self.analyzer.periodic_model_update(self.database))
+                    self.last_model_update = current_time
                 
             except Exception as e:
                 self.is_scanning = False

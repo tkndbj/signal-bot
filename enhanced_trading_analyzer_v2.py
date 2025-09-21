@@ -561,6 +561,276 @@ class MLTradingAnalyzer:
                 processed.update(group)
         
         return groups
+
+    def update_model_from_trades(self, symbol: str, trade_results: List[Dict]) -> bool:
+        """Update model based on trade outcomes"""
+        try:
+            symbol = symbol.replace('/', '')
+            if not symbol.endswith('USDT'):
+                symbol = symbol + 'USDT'
+        
+            if not trade_results or symbol not in self.models:
+                return False
+        
+            # Get recent market data for retraining
+            df = asyncio.run(self.get_market_data(symbol, '1h', self.lookback_periods))
+            if df.empty or len(df) < self.lookback_periods:
+                return False
+        
+            # Engineer features
+            df = self.engineer_features(df)
+            df = self.orthogonalize_features(df)
+        
+            # Add trade outcome features
+            df = self._add_trade_feedback_features(df, trade_results)
+        
+            # Retrain with weighted samples
+            model_info = self._retrain_with_weights(df, symbol, trade_results)
+        
+            if model_info:
+                logger.info(f"Model updated for {symbol} with trade feedback")
+                return True
+            return False
+        
+        except Exception as e:
+            logger.error(f"Error updating model from trades: {e}")
+            return False
+
+    def _add_trade_feedback_features(self, df: pd.DataFrame, trade_results: List[Dict]) -> pd.DataFrame:
+        """Add trade outcome features to training data"""
+        try:
+            # Initialize feedback columns
+            df['trade_success_rate'] = 0.5  # Default neutral
+            df['avg_trade_return'] = 0.0
+            df['trade_signal_quality'] = 0.5
+            
+            for trade in trade_results[-20:]:  # Use last 20 trades
+                trade_time = pd.to_datetime(trade['created_at'])
+                
+                # Find closest timestamp in df
+                time_diffs = abs(df.index - trade_time)
+                if len(time_diffs) > 0:
+                    closest_idx = time_diffs.argmin()
+                    
+                    # Calculate trade success
+                    pnl_pct = trade.get('pnl_percentage', 0)
+                    trade_success = 1.0 if pnl_pct > 0 else 0.0
+                    
+                    # Update feedback features in a window around trade
+                    window_size = 5
+                    start_idx = max(0, closest_idx - window_size)
+                    end_idx = min(len(df), closest_idx + window_size)
+                    
+                    # Weighted update based on proximity
+                    for i in range(start_idx, end_idx):
+                        weight = 1.0 / (1.0 + abs(i - closest_idx))
+                        df.iloc[i, df.columns.get_loc('trade_success_rate')] += trade_success * weight * 0.1
+                        df.iloc[i, df.columns.get_loc('avg_trade_return')] += pnl_pct * weight * 0.01
+                        
+                        # Signal quality based on prediction accuracy
+                        if trade.get('ml_prediction'):
+                            pred_accuracy = 1.0 if (trade['ml_prediction'] > 0 and pnl_pct > 0) or \
+                                                 (trade['ml_prediction'] < 0 and pnl_pct < 0) else 0.0
+                            df.iloc[i, df.columns.get_loc('trade_signal_quality')] += pred_accuracy * weight * 0.1
+            
+            # Clip values to reasonable ranges
+            df['trade_success_rate'] = df['trade_success_rate'].clip(0, 1)
+            df['trade_signal_quality'] = df['trade_signal_quality'].clip(0, 1)
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error adding trade feedback features: {e}")
+            return df
+
+    def _retrain_with_weights(self, df: pd.DataFrame, symbol: str, trade_results: List[Dict]) -> Dict:
+        """Retrain model with sample weights based on prediction accuracy"""
+        try:
+            # Select features including new feedback features
+            df, selected_features = self.select_features(df)
+            
+            if not selected_features:
+                return {}
+            
+            # Prepare data
+            X = df[selected_features].ffill().bfill().fillna(0)
+            y = df['target_return'].fillna(0)
+            
+            # Calculate sample weights based on trade feedback
+            sample_weights = np.ones(len(X))
+            
+            # Give more weight to periods with successful trades
+            if 'trade_success_rate' in df.columns:
+                success_rates = df['trade_success_rate'].values
+                sample_weights = 0.5 + 0.5 * success_rates  # Range: 0.5 to 1.0
+            
+            # Clean data
+            mask = np.isfinite(X).all(axis=1) & np.isfinite(y)
+            X = X[mask]
+            y = y[mask]
+            sample_weights = sample_weights[mask]
+            
+            if len(X) < 50:
+                return {}
+            
+            # Split data
+            split_idx = int(len(X) * 0.8)
+            X_train, X_test = X[:split_idx], X[split_idx:]
+            y_train, y_test = y[:split_idx], y[split_idx:]
+            weights_train = sample_weights[:split_idx]
+            
+            # Scale features
+            scaler = RobustScaler()
+            X_train_scaled = scaler.fit_transform(X_train)
+            X_test_scaled = scaler.transform(X_test)
+            
+            # Train with sample weights
+            model = RandomForestRegressor(
+                n_estimators=75,  # Slightly more trees for learning
+                max_depth=6,
+                min_samples_split=8,
+                random_state=42,
+                n_jobs=1
+            )
+            model.fit(X_train_scaled, y_train, sample_weight=weights_train)
+            
+            # Validate
+            y_pred = model.predict(X_test_scaled)
+            score = mean_squared_error(y_test, y_pred)
+            
+            # Update feature importance based on trade success correlation
+            feature_importance = dict(zip(selected_features, model.feature_importances_))
+            
+            # Boost importance of features that correlated with successful trades
+            if trade_results:
+                feature_importance = self._adjust_feature_importance_by_trades(
+                    feature_importance, trade_results, selected_features
+                )
+            
+            # Update stored models
+            self.models[symbol] = model
+            self.scalers[symbol] = scaler
+            self.feature_selectors[symbol] = selected_features
+            self.feature_importance_history[symbol] = {
+                'feature_importance': feature_importance,
+                'shap_importance': {},
+                'best_score': score,
+                'best_model': 'rf_adaptive',
+                'last_retrain': datetime.now().isoformat(),
+                'trade_feedback_count': len(trade_results)
+            }
+            
+            return {
+                'model': model,
+                'scaler': scaler,
+                'features': selected_features,
+                'importance': feature_importance,
+                'cv_score': score,
+                'model_type': 'rf_adaptive'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in retrain with weights: {e}")
+            return {}
+
+    def _adjust_feature_importance_by_trades(self, feature_importance: Dict, 
+                                            trade_results: List[Dict], 
+                                            features: List[str]) -> Dict:
+        """Adjust feature importance based on trade success"""
+        try:
+            # Analyze which features were most important in successful trades
+            successful_trades = [t for t in trade_results if t.get('pnl_percentage', 0) > 0]
+            failed_trades = [t for t in trade_results if t.get('pnl_percentage', 0) <= 0]
+            
+            if not successful_trades:
+                return feature_importance
+            
+            # Boost features that were important in successful trades
+            boost_factors = {}
+            for feature in features:
+                boost_factors[feature] = 1.0
+                
+                # Check correlation with success
+                for trade in successful_trades[-10:]:  # Last 10 successful trades
+                    trade_features = trade.get('feature_importance', {})
+                    if feature in trade_features and trade_features[feature] > 0.1:
+                        boost_factors[feature] *= 1.05  # 5% boost
+                
+                # Penalize features important in failed trades
+                for trade in failed_trades[-5:]:  # Last 5 failed trades
+                    trade_features = trade.get('feature_importance', {})
+                    if feature in trade_features and trade_features[feature] > 0.15:
+                        boost_factors[feature] *= 0.95  # 5% penalty
+            
+            # Apply adjustments
+            adjusted_importance = {}
+            for feature, importance in feature_importance.items():
+                adjusted_importance[feature] = importance * boost_factors.get(feature, 1.0)
+            
+            # Normalize
+            total = sum(adjusted_importance.values())
+            if total > 0:
+                adjusted_importance = {k: v/total for k, v in adjusted_importance.items()}
+            
+            return adjusted_importance
+            
+        except Exception as e:
+            logger.error(f"Error adjusting feature importance: {e}")
+            return feature_importance
+
+    async def periodic_model_update(self, database) -> None:
+        """Periodically update models with trade feedback"""
+        try:
+            # Get recent closed trades from database
+            with database.get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT s.*, tr.pnl_percentage, tr.pnl_usd, tr.exit_reason,
+                           s.ml_prediction, s.feature_importance
+                    FROM signals s
+                    JOIN trade_results tr ON s.signal_id = tr.signal_id
+                    WHERE s.status = 'closed' 
+                    AND s.closed_at > datetime('now', '-7 days')
+                    ORDER BY s.closed_at DESC
+                ''')
+                
+                recent_trades = []
+                for row in cursor.fetchall():
+                    trade_dict = dict(row)
+                    # Parse JSON fields
+                    try:
+                        trade_dict['feature_importance'] = json.loads(
+                            trade_dict.get('feature_importance', '{}')
+                        )
+                    except:
+                        trade_dict['feature_importance'] = {}
+                    recent_trades.append(trade_dict)
+            
+            if not recent_trades:
+                logger.info("No recent trades for model update")
+                return
+            
+            # Group trades by coin
+            trades_by_coin = {}
+            for trade in recent_trades:
+                coin = trade['coin']
+                if coin not in trades_by_coin:
+                    trades_by_coin[coin] = []
+                trades_by_coin[coin].append(trade)
+            
+            # Update models for coins with enough trades
+            for coin, trades in trades_by_coin.items():
+                if len(trades) >= 3:  # Need at least 3 trades
+                    logger.info(f"Updating model for {coin} with {len(trades)} trade results")
+                    self.update_model_from_trades(coin, trades)
+                    await asyncio.sleep(2)  # Rate limiting
+            
+            # Save updated models
+            self.save_models()
+            logger.info("Periodic model update completed")
+            
+        except Exception as e:
+            logger.error(f"Error in periodic model update: {e}")
     
     def select_features(self, df: pd.DataFrame, target_col: str = 'target_return') -> Tuple[pd.DataFrame, List[str]]:
         """Feature selection - SIMPLIFIED"""
