@@ -194,7 +194,11 @@ class TradingBot:
             open_positions = {}
             for pos in positions:
                 if pos['contracts'] > 0:
-                    symbol = self.normalize_symbol(pos['symbol'])
+                    symbol = pos['symbol']
+                    # Fix Bybit's double USDT issue
+                    if symbol.endswith('USDTUSDT'):
+                        symbol = symbol.replace('USDTUSDT', 'USDT')
+                    symbol = self.normalize_symbol(symbol)
                     open_positions[symbol] = {
                         'contracts': pos['contracts'],
                         'side': pos['side'],
@@ -213,15 +217,7 @@ class TradingBot:
             # Check which database signals are no longer on exchange
             for signal in db_signals:
                 # Fix double USDT issue
-                coin = signal['coin']
-                # Handle both BOMEUSDTUSDT and BOMEUSDT cases
-                if coin.endswith('USDTUSDT'):
-                    coin = coin.replace('USDTUSDT', 'USDT')
-                elif coin.endswith('USDT') and not coin.endswith('USDTUSDT'):
-                    coin = coin  # Already correct
-                else:
-                    coin = coin + 'USDT'
-                coin_symbol = coin
+                coin_symbol = self.normalize_symbol(signal['coin'])
                 
                 if coin_symbol not in open_positions:
                     # Position closed on exchange but still active in DB

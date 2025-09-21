@@ -224,6 +224,14 @@ class Database:
         try:
             with self.get_db_connection() as conn:
                 cursor = conn.cursor()
+
+                # Normalize coin symbol to prevent duplicates
+                coin = signal_data['coin']
+                if coin.endswith('USDTUSDT'):
+                    coin = coin.replace('USDTUSDT', 'USDT')
+                elif not coin.endswith('USDT'):
+                    coin = coin + 'USDT'
+                signal_data['coin'] = coin
                 
                 # Check if signal already exists
                 cursor.execute('SELECT id FROM signals WHERE signal_id = ?', 
