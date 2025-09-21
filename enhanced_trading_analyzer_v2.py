@@ -80,9 +80,9 @@ class MLTradingAnalyzer:
         
         # Core parameters - FIXED VALUES
         self.coins = [
-            'WLFIUSDT', 'DOGEUSDT', 'BONKUSDT', 'FLOKIUSDT', 'LINKUSDT', 'PEPEUSDT',
+            'WLFIUSDT', 'DOGEUSDT', '1000BONKUSDT', '1000FLOKIUSDT', 'LINKUSDT', '1000PEPEUSDT',
             'NEARUSDT', 'TIAUSDT', 'ARBUSDT', 'APTUSDT', 'TAOUSDT', 'FETUSDT',
-            'SUIUSDT', 'SEIUSDT', 'OPUSDT', 'LDOUSDT', 'SHIBUSDT', 'BOMEUSDT',
+            'SUIUSDT', 'SEIUSDT', 'OPUSDT', 'LDOUSDT', 'SHIB1000USDT', 'BOMEUSDT',
             'PENDLEUSDT', 'JUPUSDT', 'LINEAUSDT', 'UBUSDT', 'CGPTUSDT',
             'POPCATUSDT', 'WIFUSDT', 'OLUSDT', 'JASMYUSDT', 'BLURUSDT', 'GMXUSDT',
             'COMPUSDT', 'CRVUSDT', 'TRUMPUSDT', '1INCHUSDT', 'SUSHIUSDT', 'YFIUSDT', 'MOVEUSDT'
@@ -145,6 +145,8 @@ class MLTradingAnalyzer:
                     'recvWindow': 10000
                 }
             })
+
+            exchange.options['createMarketBuyOrderRequiresPrice'] = False
         
             # Load markets with retry
             max_retries = 3

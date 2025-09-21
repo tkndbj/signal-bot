@@ -327,6 +327,14 @@ class TradingBot:
             # Place order
             side = 'buy' if signal_data['direction'] == 'LONG' else 'sell'
 
+            # Set order parameters - Bybit needs these specific params
+            order_params = {
+                'positionIdx': 0,
+                'timeInForce': 'IOC',
+                'orderType': 'Market',
+                'category': 'linear'
+            }
+
             # For market buy orders, Bybit via CCXT requires price to calculate cost
             if side == 'buy':
                 order = self.analyzer.exchange.create_order(
@@ -416,9 +424,9 @@ class TradingBot:
             }
         
             # Use the correct API method
-            response = self.analyzer.exchange.private_post_v5_position_trading_stop(params)
+            response = self.analyzer.exchange.privatePostV5PositionTradingStop(params)
         
-            if response and response.get('retCode') == 0:
+            if response and (response.get('retCode') == 0 or response.get('ret_code') == 0):
                 logger.info(f"SL/TP set successfully for {symbol} - TP: {take_profit}, SL: {stop_loss}")
                 return True
             else:
@@ -506,7 +514,7 @@ class TradingBot:
             if model_confidence is None:
                 model_confidence = signal_data.get('confidence', 0) / 100.0
     
-            if model_confidence is not None and model_confidence < self.min_confidence_threshold:
+            if model_confidence and model_confidence < self.min_confidence_threshold:
                 logger.warning(f"Model confidence too low: {model_confidence}")
                 return False
             
