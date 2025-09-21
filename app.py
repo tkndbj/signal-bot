@@ -448,7 +448,7 @@ class TradingBot:
             # Use the correct API method
             response = self.analyzer.exchange.privatePostV5PositionTradingStop(params)
         
-            if response and (response.get('retCode') == 0 or response.get('ret_code') == 0):
+            if response and (response.get('retCode') in [0, '0'] or response.get('ret_code') in [0, '0']):
                 logger.info(f"Response from Bybit SL/TP: {response}")
                 logger.info(f"SL/TP set successfully for {symbol} - TP: {take_profit}, SL: {stop_loss}")
                 return True
