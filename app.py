@@ -321,19 +321,36 @@ class TradingBot:
             
             # Place order
             side = 'buy' if signal_data['direction'] == 'LONG' else 'sell'
-            
-            order = self.analyzer.exchange.create_order(
-                symbol=symbol,
-                type='market',
-                side=side,
-                amount=quantity,
-                params={
-                    'positionIdx': 0,
-                    'timeInForce': 'IOC',
-                    'orderType': 'Market',
-                    'category': 'linear'
-                }
-            )
+
+            # For market buy orders, Bybit via CCXT requires price to calculate cost
+            if side == 'buy':
+                order = self.analyzer.exchange.create_order(
+                    symbol=symbol,
+                    type='market',
+                    side=side,
+                    amount=quantity,
+                    price=current_price,  # Required for market buy on Bybit
+                    params={
+                        'positionIdx': 0,
+                        'timeInForce': 'IOC',
+                        'orderType': 'Market',
+                        'category': 'linear',
+                        'createMarketBuyOrderRequiresPrice': False  # Tell CCXT amount is in base currency
+                    }
+                )
+            else:
+                order = self.analyzer.exchange.create_order(
+                    symbol=symbol,
+                    type='market',
+                    side=side,
+                    amount=quantity,
+                    params={
+                        'positionIdx': 0,
+                        'timeInForce': 'IOC',
+                        'orderType': 'Market',
+                        'category': 'linear'
+                    }
+                )
             
             # Wait for order to process
             await asyncio.sleep(2)
@@ -376,13 +393,13 @@ class TradingBot:
             return False
 
     async def set_sl_tp(self, symbol: str, direction: str, quantity: float, 
-                       stop_loss: float, take_profit: float) -> bool:
+                    stop_loss: float, take_profit: float) -> bool:
         """Set stop loss and take profit orders"""
         try:
             await asyncio.sleep(3)  # Wait for position to register
-            
-            # Set SL/TP using trading stop endpoint
-            response = self.analyzer.exchange.privatePostV5PositionTradingStop({
+        
+            # Use the correct v5 API endpoint with proper parameters
+            params = {
                 'category': 'linear',
                 'symbol': symbol,
                 'stopLoss': str(stop_loss),
@@ -391,14 +408,18 @@ class TradingBot:
                 'slTriggerBy': 'LastPrice',
                 'tpslMode': 'Full',
                 'positionIdx': 0
-            })
-            
-            if response and str(response.get('retCode')) == '0':
-                logger.info(f"SL/TP set for {symbol}")
+            }
+        
+            # Use the correct API method
+            response = self.analyzer.exchange.private_post_v5_position_trading_stop(params)
+        
+            if response and response.get('retCode') == 0:
+                logger.info(f"SL/TP set successfully for {symbol} - TP: {take_profit}, SL: {stop_loss}")
                 return True
-            
-            return False
-            
+            else:
+                logger.error(f"Failed to set SL/TP for {symbol}: {response}")
+                return False
+        
         except Exception as e:
             logger.error(f"Error setting SL/TP for {symbol}: {e}")
             return False
@@ -476,8 +497,11 @@ class TradingBot:
                 return False
             
             # Check ML confidence
-            model_confidence = signal_data.get('model_confidence', 0)
-            if model_confidence < self.min_confidence_threshold:
+            model_confidence = signal_data.get('model_confidence')
+            if model_confidence is None:
+                model_confidence = signal_data.get('confidence', 0) / 100.0
+    
+            if model_confidence is not None and model_confidence < self.min_confidence_threshold:
                 logger.warning(f"Model confidence too low: {model_confidence}")
                 return False
             
