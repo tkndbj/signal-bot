@@ -195,7 +195,7 @@ class TradingBot:
             for pos in positions:
                 if pos['contracts'] > 0:
                     symbol = pos['symbol']
-                    # Fix Bybit's double USDT issue
+                    symbol = symbol.replace(':USDT', '')
                     if symbol.endswith('USDTUSDT'):
                         symbol = symbol.replace('USDTUSDT', 'USDT')
                     symbol = self.normalize_symbol(symbol)
