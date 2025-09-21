@@ -369,7 +369,7 @@ class TradingBot:
             await asyncio.sleep(2)
             
             # Check if order filled
-            if order and (order.get('status') in ['closed', 'filled'] or order.get('filled', 0) > 0):
+            if order and (order.get('status') in ['closed', 'filled', 'Filled'] or (order.get('filled') and order.get('filled') > 0)):
                 # Set stop loss and take profit
                 await self.set_sl_tp(
                     symbol,
@@ -427,6 +427,7 @@ class TradingBot:
             response = self.analyzer.exchange.privatePostV5PositionTradingStop(params)
         
             if response and (response.get('retCode') == 0 or response.get('ret_code') == 0):
+                logger.info(f"Response from Bybit SL/TP: {response}")
                 logger.info(f"SL/TP set successfully for {symbol} - TP: {take_profit}, SL: {stop_loss}")
                 return True
             else:
