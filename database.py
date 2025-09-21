@@ -364,8 +364,10 @@ class Database:
                         pnl_percentage = ((exit_price - signal['entry_price']) / signal['entry_price']) * 100 * leverage
                     else:
                         pnl_percentage = ((signal['entry_price'] - exit_price) / signal['entry_price']) * 100 * leverage
-                    
-                    pnl_usd = (pnl_percentage / 100) * position_value
+    
+                    # Calculate P&L based on margin (position_value / leverage)
+                    margin_used = position_value / leverage
+                    pnl_usd = (pnl_percentage / 100) * margin_used
                 else:
                     pnl_usd = 0
                     pnl_percentage = 0

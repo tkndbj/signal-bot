@@ -625,8 +625,10 @@ class TradingBot:
                                     pnl_pct = ((current_price - signal['entry_price']) / signal['entry_price']) * 100 * self.leverage
                                 else:
                                     pnl_pct = ((signal['entry_price'] - current_price) / signal['entry_price']) * 100 * self.leverage
-                                
-                                pnl_usd = (pnl_pct / 100) * position_value
+    
+                                # Calculate P&L based on margin (position_value / leverage)
+                                margin_used = position_value / self.leverage
+                                pnl_usd = (pnl_pct / 100) * margin_used
                                 
                                 signal['live_pnl_usd'] = round(pnl_usd, 2)
                                 signal['live_pnl_percentage'] = round(pnl_pct, 2)
@@ -716,9 +718,12 @@ class TradingBot:
                                 pnl_pct = ((trade['exit_price'] - trade['entry_price']) / trade['entry_price']) * 100 * self.leverage
                             else:
                                 pnl_pct = ((trade['entry_price'] - trade['exit_price']) / trade['entry_price']) * 100 * self.leverage
-                            
-                            trade['pnl_usd'] = (pnl_pct / 100) * position_value
+
+                            # Calculate P&L based on margin (position_value / leverage)
+                            margin_used = position_value / self.leverage
+                            trade['pnl_usd'] = (pnl_pct / 100) * margin_used
                             trade['pnl_percentage'] = pnl_pct
+                            
                         else:
                             trade['pnl_usd'] = 0
                             trade['pnl_percentage'] = 0
