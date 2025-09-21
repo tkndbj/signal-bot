@@ -214,9 +214,14 @@ class TradingBot:
             for signal in db_signals:
                 # Fix double USDT issue
                 coin = signal['coin']
-                if coin.endswith('USDT'):
-                    coin = coin.replace('USDT', '')
-                coin_symbol = self.normalize_symbol(coin)
+                # Handle both BOMEUSDTUSDT and BOMEUSDT cases
+                if coin.endswith('USDTUSDT'):
+                    coin = coin.replace('USDTUSDT', 'USDT')
+                elif coin.endswith('USDT') and not coin.endswith('USDTUSDT'):
+                    coin = coin  # Already correct
+                else:
+                    coin = coin + 'USDT'
+                coin_symbol = coin
                 
                 if coin_symbol not in open_positions:
                     # Position closed on exchange but still active in DB
