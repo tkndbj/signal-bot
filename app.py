@@ -456,6 +456,32 @@ class TradingBot:
             logger.error(f"Error setting SL/TP for {symbol}: {e}")
             return False
 
+    async def update_sl_tp_on_exchange(self, symbol: str, direction: str, new_sl: float, new_tp: float) -> bool:
+        """Update stop loss and take profit on exchange"""
+        try:
+            params = {
+                'category': 'linear',
+                'symbol': symbol,
+                'stopLoss': str(new_sl),
+                'takeProfit': str(new_tp),
+                'tpTriggerBy': 'LastPrice',
+                'slTriggerBy': 'LastPrice',
+                'tpslMode': 'Full',
+                'positionIdx': 0
+            }
+        
+            response = self.analyzer.exchange.privatePostV5PositionTradingStop(params)
+        
+            if response and (response.get('retCode') in [0, '0'] or response.get('ret_code') in [0, '0']):
+                return True
+            else:
+                logger.warning(f"Failed to update SL/TP for {symbol}: {response}")
+                return False
+            
+        except Exception as e:
+            logger.error(f"Error updating SL/TP for {symbol}: {e}")
+            return False
+
     async def close_position(self, signal_data: Dict, reason: str) -> bool:
         """Close position on Bybit"""
         try:
@@ -818,22 +844,52 @@ class TradingBot:
         """Check if any signals should be closed"""
         try:
             active_signals = self.database.get_active_signals()
-            
+        
             for signal in active_signals:
                 try:
                     symbol = self.normalize_symbol(signal['coin'])
                     current_price = await self.analyzer.get_current_price(symbol)
-                    
+                
                     if current_price <= 0:
                         continue
-                    
+                
                     # Update current price
                     self.database.update_signal_price(signal['signal_id'], current_price)
+                
+                    # Get market data for dynamic analysis
+                    df = await self.analyzer.get_market_data(symbol, '1h', 100)
+                
+                    # Evaluate position health and get dynamic levels
+                    if not df.empty and len(df) >= 50:
+                        evaluation = self.analyzer.evaluate_position_health(signal, df)
+                        dynamic_levels = self.analyzer.calculate_dynamic_levels(signal, df, evaluation)
                     
-                    # Check exit conditions
+                        # Handle dynamic adjustments
+                        if dynamic_levels.get('action') == 'exit':
+                            exit_reason = f"Dynamic Exit: {dynamic_levels.get('reason', 'ML recommendation')}"
+                            exit_price = current_price
+                        elif dynamic_levels.get('action') == 'update':
+                            # Update SL/TP on exchange
+                            new_sl = dynamic_levels.get('new_sl')
+                            new_tp = dynamic_levels.get('new_tp')
+                            if new_sl and new_tp:
+                                if await self.update_sl_tp_on_exchange(symbol, signal['direction'], new_sl, new_tp):
+                                    # Update database with new levels
+                                    with self.database.get_db_connection() as conn:
+                                        cursor = conn.cursor()
+                                        cursor.execute('''
+                                            UPDATE signals 
+                                            SET stop_loss = ?, take_profit = ?, updated_at = CURRENT_TIMESTAMP
+                                            WHERE signal_id = ?
+                                        ''', (new_sl, new_tp, signal['signal_id']))
+            
+                                    logger.info(f"Updated SL/TP for {symbol}: SL={new_sl:.6f}, TP={new_tp:.6f}")
+                                    continue
+                
+                    # Check standard exit conditions
                     exit_reason = None
                     exit_price = None
-                    
+                
                     if signal['direction'] == 'LONG':
                         if current_price >= signal['take_profit']:
                             exit_reason = "Take Profit Hit"
