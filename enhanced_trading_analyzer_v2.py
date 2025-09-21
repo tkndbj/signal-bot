@@ -20,7 +20,7 @@ os.environ['OPENBLAS_NUM_THREADS'] = '1'
 
 # ML and feature engineering imports
 import sklearn
-import numba  # Add this import
+import numba
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.preprocessing import StandardScaler, RobustScaler
 from sklearn.decomposition import PCA
@@ -78,7 +78,7 @@ class MLTradingAnalyzer:
         self.exchange = self._initialize_exchange()
         self.database = database
         
-        # Core parameters
+        # Core parameters - FIXED VALUES
         self.coins = [
             'WLFIUSDT', 'DOGEUSDT', 'BONKUSDT', 'FLOKIUSDT', 'LINKUSDT', 'PEPEUSDT',
             'NEARUSDT', 'TIAUSDT', 'ARBUSDT', 'APTUSDT', 'TAOUSDT', 'FETUSDT',
@@ -95,21 +95,17 @@ class MLTradingAnalyzer:
         self.min_rr_ratio = 2.0
         self.max_signals_per_scan = 7
         
-        # ML Model parameters
-        self.lookback_periods = 300  # For training
+        # ML Model parameters - OPTIMIZED
+        self.lookback_periods = 200  # REDUCED from 300 to avoid data issues
         self.min_data_points = 100
-        self.prediction_horizon = 24  # Hours ahead to predict
+        self.prediction_horizon = 6  # REDUCED from 24 for better data preservation
         self.feature_selection_k = 15  # Top K features to keep
         self.cv_folds = 5  # Time series CV folds
         
-        # Feature engineering parameters
-        self.orthogonal_threshold = 0.85  # Correlation threshold for orthogonalization
+        # Feature engineering parameters - OPTIMIZED
+        self.orthogonal_threshold = 0.95  # INCREASED from 0.85 to be less aggressive
         self.pca_variance_threshold = 0.95
         
-        # Models storage
-        # Cache markets
-        self.markets = self.exchange.markets  # Cache for fast validation
-        logger.info(f"Loaded {len(self.exchange.markets)} markets from Bybit")
         # Models storage
         self.models = {}
         self.scalers = {}
@@ -126,10 +122,10 @@ class MLTradingAnalyzer:
         # Threading
         self.executor = ThreadPoolExecutor(max_workers=4)
         
-        logger.info("ML Trading Analyzer initialized with advanced feature engineering")
+        logger.info("ML Trading Analyzer initialized with production fixes")
     
     def _initialize_exchange(self) -> ccxt.Exchange:
-        """Initialize Bybit exchange for real trading"""
+        """Initialize Bybit exchange for real trading - FIXED"""
         try:
             api_key = os.getenv('BYBIT_API_KEY', '')
             secret_key = os.getenv('BYBIT_SECRET_KEY', '')
@@ -141,7 +137,8 @@ class MLTradingAnalyzer:
                 'apiKey': api_key,
                 'secret': secret_key,
                 'enableRateLimit': True,
-                'rateLimit': 100,
+                'rateLimit': 200,  # INCREASED from 100
+                'timeout': 30000,  # ADDED timeout
                 'options': {
                     'defaultType': 'linear',  # For USDT perpetuals
                     'adjustForTimeDifference': True,
@@ -149,11 +146,25 @@ class MLTradingAnalyzer:
                 }
             })
         
-            # Load markets
-            exchange.load_markets()
+            # Load markets with retry
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    exchange.load_markets()
+                    if exchange.markets:
+                        break
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        raise e
+                    time.sleep(2 ** attempt)
+        
             if not exchange.markets:
                 logger.error("Failed to load markets from Bybit")
                 raise ValueError("No markets loaded")
+        
+            # Cache markets for fast access
+            self.markets = exchange.markets
+            logger.info(f"Loaded {len(exchange.markets)} markets from Bybit")
         
             # Test balance fetch
             try:
@@ -173,7 +184,12 @@ class MLTradingAnalyzer:
     
     async def get_market_data(self, symbol: str, timeframe: str = '1h', 
                             limit: int = 500) -> pd.DataFrame:
-        """Enhanced market data fetching with extended history"""
+        """Enhanced market data fetching - FIXED SYMBOL HANDLING"""
+        # FIX: Normalize symbol format
+        symbol = symbol.replace('/', '')
+        if not symbol.endswith('USDT'):
+            symbol = symbol + 'USDT'
+        
         cache_key = f"{symbol}_{timeframe}_{limit}"
         current_time = time.time()
         
@@ -192,10 +208,10 @@ class MLTradingAnalyzer:
             self.request_delays[symbol] = current_time
             
             # Fetch with retry logic
-            ohlcv = await self._fetch_with_retry(symbol, timeframe, limit=limit)  # Pass limit explicitly
-            logger.info(f"Fetched {len(ohlcv)} rows for {symbol}")
-            if not ohlcv or len(ohlcv) < self.min_data_points:  # Use min_data_points (100) instead of lookback_periods
-                logger.warning(f"Insufficient rows for {symbol}: {len(ohlcv)}")
+            ohlcv = await self._fetch_with_retry(symbol, timeframe, limit=limit)
+            
+            if not ohlcv or len(ohlcv) < self.min_data_points:
+                logger.warning(f"Insufficient data for {symbol}: {len(ohlcv) if ohlcv else 0} rows")
                 return pd.DataFrame()
             
             # Create DataFrame
@@ -219,354 +235,89 @@ class MLTradingAnalyzer:
         except Exception as e:
             logger.error(f"Error fetching data for {symbol}: {e}")
             return pd.DataFrame()
-
-    def detect_market_regime(self, df: pd.DataFrame) -> Dict:
-        """Detect current market regime using multiple indicators"""
-        try:
-            if len(df) < 50:
-                return {'regime': 'unknown', 'confidence': 0}
-            
-            # Calculate regime indicators
-            current_price = df['close'].iloc[-1]
-            
-            # 1. Volatility regime
-            atr_14 = talib.ATR(df['high'].values, df['low'].values, df['close'].values, 14)[-1]
-            atr_pct = atr_14 / current_price
-            vol_24h = df['close'].pct_change().rolling(24).std().iloc[-1] * np.sqrt(24)
-            
-            # Historical volatility baseline (last 100 periods)
-            hist_vol = df['close'].pct_change().rolling(24).std().mean() * np.sqrt(24)
-            vol_ratio = vol_24h / hist_vol if hist_vol > 0 else 1
-            
-            # 2. Trend regime
-            sma_20 = df['close'].rolling(20).mean().iloc[-1]
-            sma_50 = df['close'].rolling(50).mean().iloc[-1]
-            adx = talib.ADX(df['high'].values, df['low'].values, df['close'].values, 14)[-1]
-            
-            # 3. Momentum indicators
-            rsi = talib.RSI(df['close'].values, 14)[-1]
-            macd, signal, hist = talib.MACD(df['close'].values)
-            macd_momentum = hist[-1] if len(hist) > 0 else 0
-            
-            # 4. Volume analysis
-            volume_ratio = df['volume'].iloc[-1] / df['volume'].rolling(20).mean().iloc[-1]
-            
-            # Classify regime
-            regime = 'normal'
-            confidence = 0.5
-            
-            # High volatility detection
-            if vol_ratio > 2.0 or atr_pct > 0.05:
-                regime = 'high_volatility'
-                confidence = min(0.9, vol_ratio / 2.0)
-            # Low volatility
-            elif vol_ratio < 0.5 and atr_pct < 0.01:
-                regime = 'low_volatility'
-                confidence = 0.7
-            # Strong trend detection
-            elif adx > 35:
-                if current_price > sma_20 > sma_50 and rsi > 50:
-                    regime = 'trending_up'
-                    confidence = min(0.85, adx / 50)
-                elif current_price < sma_20 < sma_50 and rsi < 50:
-                    regime = 'trending_down'
-                    confidence = min(0.85, adx / 50)
-            # Ranging market
-            elif adx < 20 and abs(rsi - 50) < 20:
-                regime = 'ranging'
-                confidence = 0.6
-            
-            return {
-                'regime': regime,
-                'confidence': confidence,
-                'volatility': vol_ratio,
-                'trend_strength': adx,
-                'momentum': macd_momentum,
-                'volume_surge': volume_ratio > 2.0,
-                'indicators': {
-                    'atr_pct': atr_pct,
-                    'rsi': rsi,
-                    'adx': adx,
-                    'vol_ratio': vol_ratio
-                }
-            }
-            
-        except Exception as e:
-            logger.error(f"Error detecting market regime: {e}")
-            return {'regime': 'unknown', 'confidence': 0}
-    
-    def evaluate_position_health(self, signal_data: Dict, df: pd.DataFrame) -> Dict:
-        """Evaluate the health of an active position"""
-        try:
-            current_price = df['close'].iloc[-1]
-            entry_price = signal_data['entry_price']
-            direction = signal_data['direction']
-            
-            # Calculate current P&L
-            if direction == 'LONG':
-                pnl_pct = ((current_price - entry_price) / entry_price) * 100
-                distance_to_tp = (signal_data['take_profit'] - current_price) / current_price
-                distance_to_sl = (current_price - signal_data['stop_loss']) / current_price
-            else:
-                pnl_pct = ((entry_price - current_price) / entry_price) * 100
-                distance_to_tp = (current_price - signal_data['take_profit']) / current_price
-                distance_to_sl = (signal_data['stop_loss'] - current_price) / current_price
-            
-            # Get fresh ML prediction
-            if len(df) >= self.lookback_periods:
-                prediction_result = self.predict_price_movement(df, signal_data['coin'] + '/USDT')
-                ml_prediction = prediction_result.get('prediction', 0) if prediction_result else 0
-                ml_confidence = prediction_result.get('confidence', 0) if prediction_result else 0
-            else:
-                ml_prediction = 0
-                ml_confidence = 0
-            
-            # Check if prediction has flipped
-            original_ml_pred = signal_data.get('ml_prediction', 0)
-            prediction_aligned = (ml_prediction * original_ml_pred) > 0
-            
-            # Detect market regime
-            regime_info = self.detect_market_regime(df)
-            
-            # Calculate position health score (0-1)
-            health_score = 1.0
-            
-            # Penalize if ML prediction flipped
-            if not prediction_aligned and abs(ml_prediction) > 0.01:
-                health_score *= 0.3
-            
-            # Penalize if ML confidence dropped significantly
-            original_confidence = signal_data.get('model_confidence', 0.7)
-            if ml_confidence < original_confidence * 0.5:
-                health_score *= 0.5
-            
-            # Penalize if in unfavorable regime
-            if regime_info['regime'] == 'high_volatility':
-                health_score *= 0.7
-            elif (direction == 'LONG' and regime_info['regime'] == 'trending_down') or \
-                 (direction == 'SHORT' and regime_info['regime'] == 'trending_up'):
-                health_score *= 0.4
-            
-            # Boost if profitable
-            if pnl_pct > 2:
-                health_score = min(1.0, health_score * 1.3)
-            
-            return {
-                'health_score': health_score,
-                'pnl_pct': pnl_pct,
-                'ml_prediction': ml_prediction,
-                'ml_confidence': ml_confidence,
-                'prediction_aligned': prediction_aligned,
-                'regime': regime_info['regime'],
-                'regime_confidence': regime_info['confidence'],
-                'distance_to_tp': distance_to_tp,
-                'distance_to_sl': distance_to_sl,
-                'current_price': current_price,
-                'recommendation': self._get_position_recommendation(
-                    health_score, pnl_pct, prediction_aligned, regime_info
-                )
-            }
-            
-        except Exception as e:
-            logger.error(f"Error evaluating position health: {e}")
-            return {'health_score': 0.5, 'recommendation': 'hold'}
-    
-    def _get_position_recommendation(self, health_score: float, pnl_pct: float, 
-                                      prediction_aligned: bool, regime_info: Dict) -> str:
-        """Get recommendation for position management"""
-        
-        # Critical exit conditions
-        if health_score < 0.3:
-            return 'exit_immediately'
-        
-        # Exit if ML completely flipped with high confidence
-        if not prediction_aligned and health_score < 0.5:
-            return 'exit_soon'
-        
-        # Tighten stops in high volatility
-        if regime_info['regime'] == 'high_volatility' and regime_info['confidence'] > 0.7:
-            return 'tighten_stop'
-        
-        # Move stop to breakeven if profitable
-        if pnl_pct > 1.5:
-            return 'move_sl_breakeven'
-        
-        # Trail stop if very profitable
-        if pnl_pct > 5:
-            return 'trail_stop'
-        
-        # Adjust targets in trending market
-        if regime_info['regime'] in ['trending_up', 'trending_down'] and regime_info['confidence'] > 0.7:
-            return 'adjust_targets'
-        
-        return 'hold'
-    
-    def calculate_dynamic_levels(self, signal_data: Dict, df: pd.DataFrame, 
-                                  evaluation: Dict) -> Dict:
-        """Calculate new dynamic stop loss and take profit levels"""
-        try:
-            current_price = evaluation['current_price']
-            direction = signal_data['direction']
-            pnl_pct = evaluation['pnl_pct']
-            recommendation = evaluation['recommendation']
-            
-            # Current levels
-            current_sl = signal_data['stop_loss']
-            current_tp = signal_data['take_profit']
-            entry_price = signal_data['entry_price']
-            
-            new_sl = current_sl
-            new_tp = current_tp
-            
-            # Calculate ATR for dynamic adjustments
-            atr = talib.ATR(df['high'].values, df['low'].values, df['close'].values, 14)[-1]
-            
-            if recommendation == 'exit_immediately':
-                # Signal to exit, no new levels needed
-                return {'action': 'exit', 'reason': 'ML model invalidated signal'}
-            
-            elif recommendation == 'exit_soon':
-                # Tighten stop very close
-                if direction == 'LONG':
-                    new_sl = current_price * 0.995  # 0.5% stop
-                else:
-                    new_sl = current_price * 1.005
-                return {'action': 'update', 'new_sl': new_sl, 'new_tp': current_tp, 
-                        'reason': 'ML prediction reversed'}
-            
-            elif recommendation == 'tighten_stop':
-                # Tighten stop by 50% of distance
-                if direction == 'LONG':
-                    sl_distance = current_price - current_sl
-                    new_sl = current_price - (sl_distance * 0.5)
-                else:
-                    sl_distance = current_sl - current_price
-                    new_sl = current_price + (sl_distance * 0.5)
-                return {'action': 'update', 'new_sl': new_sl, 'new_tp': current_tp,
-                        'reason': 'High volatility detected'}
-            
-            elif recommendation == 'move_sl_breakeven':
-                # Move stop to breakeven + small profit
-                if direction == 'LONG':
-                    new_sl = entry_price * 1.002  # Breakeven + 0.2%
-                    new_sl = max(new_sl, current_sl)  # Never move stop against position
-                else:
-                    new_sl = entry_price * 0.998
-                    new_sl = min(new_sl, current_sl)
-                return {'action': 'update', 'new_sl': new_sl, 'new_tp': current_tp,
-                        'reason': 'Protecting profits at breakeven'}
-            
-            elif recommendation == 'trail_stop':
-                # Trail stop at 2x ATR
-                if direction == 'LONG':
-                    new_sl = current_price - (atr * 2)
-                    new_sl = max(new_sl, current_sl)  # Only move up
-                else:
-                    new_sl = current_price + (atr * 2)
-                    new_sl = min(new_sl, current_sl)  # Only move down
-                return {'action': 'update', 'new_sl': new_sl, 'new_tp': current_tp,
-                        'reason': 'Trailing stop for profits'}
-            
-            elif recommendation == 'adjust_targets':
-                # Extend targets in trending market
-                regime = evaluation['regime']
-                if (direction == 'LONG' and regime == 'trending_up') or \
-                   (direction == 'SHORT' and regime == 'trending_down'):
-                    # Extend take profit by 50%
-                    if direction == 'LONG':
-                        tp_distance = current_tp - entry_price
-                        new_tp = entry_price + (tp_distance * 1.5)
-                    else:
-                        tp_distance = entry_price - current_tp
-                        new_tp = entry_price - (tp_distance * 1.5)
-                return {'action': 'update', 'new_sl': new_sl, 'new_tp': new_tp,
-                        'reason': f'Favorable {regime} detected'}
-            
-            return {'action': 'hold', 'reason': 'No adjustment needed'}
-            
-        except Exception as e:
-            logger.error(f"Error calculating dynamic levels: {e}")
-            return {'action': 'hold', 'reason': 'Error in calculation'}
     
     async def _fetch_with_retry(self, symbol: str, timeframe: str, 
                             limit: int = 500, max_retries: int = 3) -> List:
-        """Fetch data with retry logic"""
+        """Fetch data with retry logic - FIXED"""
         for attempt in range(max_retries):
             try:
-                # Use sync version of fetch_ohlcv since ccxt.async is not used
+                # Use sync version since we're not using ccxt.async
                 return self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
             except Exception as e:
+                logger.warning(f"Fetch attempt {attempt + 1} failed for {symbol}: {e}")
                 if attempt == max_retries - 1:
-                    raise e
-                time.sleep(2 ** (attempt + 1))  # Use sync sleep
+                    return []  # Return empty list instead of raising
+                await asyncio.sleep(2 ** (attempt + 1))
         return []
     
     def _validate_data_quality(self, df: pd.DataFrame) -> bool:
-        if df.empty or len(df) < 100:  # Reduce from 150
+        """Validate data quality - RELAXED THRESHOLDS"""
+        if df.empty or len(df) < 50:  # REDUCED from 100
             return False
-        if df.isnull().sum().sum() > len(df) * 0.10:  # Increase null tolerance to 10%
+        if df.isnull().sum().sum() > len(df) * 0.15:  # INCREASED tolerance from 0.10
             return False
-        if (df['volume'] == 0).sum() > len(df) * 0.20:  # Increase zero-volume tolerance to 20%
+        if (df['volume'] == 0).sum() > len(df) * 0.25:  # INCREASED from 0.20
             return False
+        
         price_cols = ['open', 'high', 'low', 'close']
         for col in price_cols:
-            z_scores = np.abs(stats.zscore(df[col].fillna(df[col].median())))
-            if (z_scores > 5).sum() > len(df) * 0.02:  # Increase outlier tolerance to 2%
+            if df[col].std() == 0:  # All same value
                 return False
+            z_scores = np.abs(stats.zscore(df[col].fillna(df[col].median())))
+            if (z_scores > 10).sum() > len(df) * 0.05:  # INCREASED outlier tolerance
+                return False
+        
         if (df['high'] < df['low']).any() or (df['high'] < df['close']).any():
             return False
+        
         return True
     
     def engineer_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Advanced feature engineering with multiple domains"""
-
-        initial_rows = len(df)
-
+        """Advanced feature engineering - FIXED DATA PRESERVATION"""
         if df.empty or len(df) < 50:
-            return df        
-    
-        try:            
-            df = df.dropna().copy()  # Only clean initial data
-            logger.info(f"Feature engineering starting with {len(df)} clean rows")
-        
-            # 1. Price-based features
-            df = self._create_price_features(df)
-        
-            # 2. Volume features
-            df = self._create_volume_features(df)
-        
-            # 3. Volatility features
-            df = self._create_volatility_features(df)
-        
-            # 4. Technical indicators (diverse)
-            df = self._create_technical_features(df)
-        
-            # 5. Momentum and trend features
-            df = self._create_momentum_features(df)  
-        
-            # 6. Create target variable (future returns)
-            df = self._create_target_variable(df)
-        
-            # CRITICAL FIX: Instead of dropna(), do selective cleaning
-            # Remove rows where target is NaN (essential)
-            df = df.dropna(subset=['target_return'])
-        
-            # For other columns, be more permissive
-            # Remove rows only if more than 50% of feature columns are NaN
-            feature_cols = [col for col in df.columns if not any(x in col.lower() for x in 
-                        ['open', 'high', 'low', 'close', 'volume', 'timestamp', 'target'])]
-        
-            if feature_cols:
-                # Calculate NaN percentage per row for feature columns only
-                nan_pct_per_row = df[feature_cols].isna().sum(axis=1) / len(feature_cols)
-                # Keep rows where less than 50% of features are NaN
-                df = df[nan_pct_per_row < 0.7]
-        
-            final_rows = len(df)
-            logger.info(f"Feature engineering completed: {final_rows} rows ({initial_rows - final_rows} removed)")
-        
             return df
         
+        try:
+            initial_rows = len(df)
+            df = df.copy()  # Work on copy
+            
+            # 1. Price-based features
+            df = self._create_price_features(df)
+            
+            # 2. Volume features
+            df = self._create_volume_features(df)
+            
+            # 3. Volatility features
+            df = self._create_volatility_features(df)
+            
+            # 4. Technical indicators
+            df = self._create_technical_features(df)
+            
+            # 5. Momentum features
+            df = self._create_momentum_features(df)
+            
+            # 6. Create target variable with SHORT horizon
+            df = self._create_target_variable(df)
+            
+            # CRITICAL: Selective cleaning to preserve data
+            # Only remove rows with NaN in target
+            df = df.dropna(subset=['target_return'])
+            
+            # For features, be more permissive
+            feature_cols = [col for col in df.columns if not any(x in col.lower() for x in 
+                        ['open', 'high', 'low', 'close', 'volume', 'timestamp', 'target'])]
+            
+            if feature_cols:
+                # Only remove rows with >70% NaN features
+                nan_pct_per_row = df[feature_cols].isna().sum(axis=1) / len(feature_cols)
+                df = df[nan_pct_per_row < 0.7]
+            
+            final_rows = len(df)
+            if final_rows < initial_rows * 0.5:
+                logger.warning(f"Too much data lost in feature engineering: {initial_rows} -> {final_rows}")
+            
+            return df
+            
         except Exception as e:
             logger.error(f"Error in feature engineering: {e}")
             return df
@@ -584,17 +335,17 @@ class MLTradingAnalyzer:
         # Price position within range
         for period in [10, 20, 50]:
             df[f'price_position_{period}'] = (df['close'] - df['close'].rolling(period).min()) / \
-                                           (df['close'].rolling(period).max() - df['close'].rolling(period).min())
+                                           (df['close'].rolling(period).max() - df['close'].rolling(period).min() + 1e-10)
         
         # Gap features
-        df['gap_up'] = (df['open'] - df['close'].shift(1)) / df['close'].shift(1)
+        df['gap_up'] = (df['open'] - df['close'].shift(1)) / (df['close'].shift(1) + 1e-10)
         df['gap_down'] = df['gap_up'] * -1
         
         # Intrabar features
-        df['body_size'] = abs(df['close'] - df['open']) / df['open']
-        df['upper_shadow'] = (df['high'] - np.maximum(df['open'], df['close'])) / df['open']
-        df['lower_shadow'] = (np.minimum(df['open'], df['close']) - df['low']) / df['open']
-        df['total_range'] = (df['high'] - df['low']) / df['open']
+        df['body_size'] = abs(df['close'] - df['open']) / (df['open'] + 1e-10)
+        df['upper_shadow'] = (df['high'] - np.maximum(df['open'], df['close'])) / (df['open'] + 1e-10)
+        df['lower_shadow'] = (np.minimum(df['open'], df['close']) - df['low']) / (df['open'] + 1e-10)
+        df['total_range'] = (df['high'] - df['low']) / (df['open'] + 1e-10)
         
         return df
     
@@ -602,16 +353,14 @@ class MLTradingAnalyzer:
         """Create volume-based features"""
         # Volume ratios
         for period in [5, 10, 20]:
-            df[f'volume_ratio_{period}'] = df['volume'] / df['volume'].rolling(period).mean()
+            df[f'volume_ratio_{period}'] = df['volume'] / (df['volume'].rolling(period).mean() + 1e-10)
         
         # Volume-price features
         df['volume_price_trend'] = talib.OBV(df['close'].values, df['volume'].values)
-        df['vpt'] = talib.OBV(df['close'].values, df['volume'].values)  # Volume Price Trend
         
         # VWAP variations
         df['vwap_1d'] = self._calculate_vwap(df, period=24)
-        df['vwap_3d'] = self._calculate_vwap(df, period=72)
-        df['price_vs_vwap_1d'] = (df['close'] - df['vwap_1d']) / df['vwap_1d']
+        df['price_vs_vwap_1d'] = (df['close'] - df['vwap_1d']) / (df['vwap_1d'] + 1e-10)
         
         # Volume momentum
         df['volume_momentum_5'] = df['volume'].pct_change(5)
@@ -629,22 +378,15 @@ class MLTradingAnalyzer:
         for period in [7, 14, 21]:
             df[f'atr_{period}'] = talib.ATR(df['high'].values, df['low'].values, 
                                           df['close'].values, timeperiod=period)
-            df[f'atr_pct_{period}'] = df[f'atr_{period}'] / df['close']
+            df[f'atr_pct_{period}'] = df[f'atr_{period}'] / (df['close'] + 1e-10)
         
         # Realized volatility
-        for period in [24, 48, 168]:  # 1d, 2d, 1w
+        for period in [24, 48]:  # Removed 168 to reduce NaN
             returns = np.log(df['close'] / df['close'].shift(1))
             df[f'realized_vol_{period}'] = returns.rolling(period).std() * np.sqrt(period)
         
         # Volatility of volatility
         df['vol_of_vol'] = df['realized_vol_24'].rolling(24).std()
-        
-        # Parkinson volatility (using high-low)
-        df['parkinson_vol'] = np.sqrt(0.25 * np.log(df['high']/df['low'])**2)
-        
-        # Garman-Klass volatility
-        df['gk_vol'] = np.sqrt(0.5 * np.log(df['high']/df['low'])**2 - 
-                              (2*np.log(2)-1) * np.log(df['close']/df['open'])**2)
         
         return df
     
@@ -656,11 +398,11 @@ class MLTradingAnalyzer:
         df['ema_12'] = talib.EMA(df['close'].values, timeperiod=12)
         df['ema_26'] = talib.EMA(df['close'].values, timeperiod=26)
         
-        # MACD family
+        # MACD
         df['macd'], df['macd_signal'], df['macd_hist'] = talib.MACD(df['close'].values)
-        df['macd_normalized'] = df['macd'] / df['close']
+        df['macd_normalized'] = df['macd'] / (df['close'] + 1e-10)
         
-        # Oscillators (but we'll orthogonalize these)
+        # Oscillators
         df['rsi_14'] = talib.RSI(df['close'].values, timeperiod=14)
         df['stoch_k'], df['stoch_d'] = talib.STOCH(df['high'].values, df['low'].values, 
                                                   df['close'].values)
@@ -668,41 +410,17 @@ class MLTradingAnalyzer:
         
         # Bollinger Bands
         df['bb_upper'], df['bb_middle'], df['bb_lower'] = talib.BBANDS(df['close'].values)
-        df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
-        df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']
+        df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'] + 1e-10)
+        df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / (df['bb_middle'] + 1e-10)
         
         # Trend strength
         df['adx'] = talib.ADX(df['high'].values, df['low'].values, df['close'].values)
-        df['di_plus'] = talib.PLUS_DI(df['high'].values, df['low'].values, df['close'].values)
-        df['di_minus'] = talib.MINUS_DI(df['high'].values, df['low'].values, df['close'].values)
-        
-        return df
-    
-    def _create_microstructure_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Create market microstructure features"""
-        # Order flow proxies
-        df['buy_pressure'] = np.where(df['close'] > df['open'], df['volume'], 0)
-        df['sell_pressure'] = np.where(df['close'] < df['open'], df['volume'], 0)
-        df['net_pressure'] = df['buy_pressure'] - df['sell_pressure']
-        
-        # Price impact features
-        df['price_impact'] = abs(df['close'].pct_change()) / (df['volume'] / df['volume'].rolling(20).mean())
-        
-        # Tick direction
-        df['tick_direction'] = np.sign(df['close'].diff())
-        df['tick_runs'] = (df['tick_direction'] != df['tick_direction'].shift()).cumsum()
-        
-        # Support/Resistance levels
-        df['recent_high'] = df['high'].rolling(20).max()
-        df['recent_low'] = df['low'].rolling(20).min()
-        df['resistance_distance'] = (df['recent_high'] - df['close']) / df['close']
-        df['support_distance'] = (df['close'] - df['recent_low']) / df['close']
         
         return df
     
     def _create_momentum_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Create momentum and trend features"""
-        # ROC (Rate of Change)
+        """Create momentum features"""
+        # ROC
         for period in [5, 10, 20]:
             df[f'roc_{period}'] = talib.ROC(df['close'].values, timeperiod=period)
         
@@ -719,36 +437,14 @@ class MLTradingAnalyzer:
             df[f'trend_consistency_{period}'] = (df['close'] > df['close'].shift(1)).rolling(period).sum() / period
         
         # Moving average convergence
-        df['ma_convergence'] = (df['sma_10'] - df['sma_50']) / df['sma_50']
-        
-        return df
-    
-    def _create_statistical_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Create statistical features"""
-        # Skewness and kurtosis of returns
-        for period in [20, 50]:
-            returns = df['close'].pct_change()
-            df[f'return_skew_{period}'] = returns.rolling(period).skew()
-            df[f'return_kurtosis_{period}'] = returns.rolling(period).kurt()
-        
-        # Autocorrelation
-        for lag in [1, 5, 10]:
-            df[f'autocorr_lag_{lag}'] = df['close'].pct_change().rolling(50).apply(
-                lambda x: x.autocorr(lag=lag), raw=False)
-        
-        # Hurst exponent (trend persistence)
-        df['hurst_50'] = df['close'].rolling(50).apply(self._calculate_hurst, raw=False)
-        
-        # Entropy (randomness measure)
-        df['entropy_20'] = df['close'].pct_change().rolling(20).apply(
-            lambda x: stats.entropy(np.histogram(x.dropna(), bins=10)[0] + 1e-10), raw=False)
+        df['ma_convergence'] = (df['sma_10'] - df['sma_50']) / (df['sma_50'] + 1e-10)
         
         return df
     
     def _calculate_vwap(self, df: pd.DataFrame, period: int) -> pd.Series:
         """Calculate VWAP over rolling period"""
         typical_price = (df['high'] + df['low'] + df['close']) / 3
-        return (typical_price * df['volume']).rolling(period).sum() / df['volume'].rolling(period).sum()
+        return (typical_price * df['volume']).rolling(period).sum() / (df['volume'].rolling(period).sum() + 1e-10)
     
     def _calculate_hurst(self, price_series) -> float:
         """Calculate Hurst exponent"""
@@ -764,217 +460,85 @@ class MLTradingAnalyzer:
             return 0.5
     
     def _create_target_variable(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Create target variable - use shorter horizon to preserve data"""
-        initial_rows = len(df)  # ADD THIS LINE
-    
-        # Use much shorter horizon to preserve training data
-        short_horizon = 6  # 6 hours instead of 24
-    
+        """Create target variable - SHORT HORIZON FOR DATA PRESERVATION"""
+        # Use 6 hour horizon instead of 24 to preserve more data
+        horizon = self.prediction_horizon  # 6 hours
+        
         # Simple future return
-        df['target_return'] = df['close'].shift(-short_horizon) / df['close'] - 1
-    
-        # Binary targets  
-        df['target_up'] = (df['target_return'] > 0.015).astype(int)  # 1.5% threshold
+        df['target_return'] = df['close'].shift(-horizon) / df['close'] - 1
+        
+        # Binary targets
+        df['target_up'] = (df['target_return'] > 0.015).astype(int)
         df['target_down'] = (df['target_return'] < -0.015).astype(int)
-    
-        # Remove only the last few rows that have NaN targets
-        df = df[:-short_horizon]  # Remove last 6 rows instead of using dropna()
-
-        final_rows = len(df)
-        logger.info(f"Target creation: {initial_rows} -> {final_rows} rows ({initial_rows - final_rows} removed)")
-    
+        
+        # Only remove the last few rows
+        df = df[:-horizon]
+        
         return df
     
     def orthogonalize_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Apply simplified orthogonalization with better error handling"""
+        """Simplified orthogonalization - LESS AGGRESSIVE"""
         try:
-            # CRITICAL: Check input data first
             if df.empty or len(df) < 50:
-                logger.warning(f"Input data too small for orthogonalization: {len(df)} rows")
                 return df
             
-            logger.info(f"Starting orthogonalization with {len(df)} rows, {len(df.columns)} columns")
-        
-            # Identify feature columns (be more permissive)
-            exclude_terms = ['timestamp', 'target']  # Reduced exclusions
-            feature_cols = []
-        
-            for col in df.columns:
-                # Only exclude if column name contains these exact patterns
-                if not any(term in col.lower() for term in exclude_terms):
-                    # Also exclude basic OHLCV unless they're derived features
-                    if col not in ['open', 'high', 'low', 'close', 'volume']:
-                        feature_cols.append(col)
-        
-            logger.info(f"Found {len(feature_cols)} potential feature columns")
-        
-            if len(feature_cols) < 5:  # Need minimum features
-                logger.warning("Too few features for orthogonalization, returning original data")
+            # Identify feature columns
+            exclude_terms = ['timestamp', 'target', 'open', 'high', 'low', 'close', 'volume']
+            feature_cols = [col for col in df.columns if not any(term in col.lower() for term in exclude_terms)]
+            
+            if len(feature_cols) < 5:
                 return df
-        
-            # Get feature data with robust cleaning
+            
+            # Get feature data
             feature_data = df[feature_cols].copy()
-        
-            # More aggressive data cleaning
-            initial_rows = len(feature_data)
-        
-            # Forward fill first, then backward fill, then zero fill
-            feature_data = feature_data.ffill().bfill().fillna(0)
-        
-            # Handle infinite values more carefully
-            feature_data = feature_data.replace([np.inf, -np.inf], np.nan)
-        
-            # For remaining NaNs, use column median
-            for col in feature_data.columns:
-                if feature_data[col].isna().any():
-                    median_val = feature_data[col].median()
-                    feature_data[col] = feature_data[col].fillna(median_val if pd.notna(median_val) else 0)
-        
-            # Check for remaining issues
-            if feature_data.isna().any().any():
-                logger.warning("Still have NaN values after cleaning, filling with 0")
-                feature_data = feature_data.fillna(0)
             
-            if feature_data.empty or len(feature_data) < 20:
-                logger.warning(f"Data too small after cleaning: {len(feature_data)} rows")
+            # Clean data
+            feature_data = feature_data.ffill().bfill().fillna(0)
+            feature_data = feature_data.replace([np.inf, -np.inf], 0)
+            
+            # If insufficient samples, just return original
+            if len(feature_data) < len(feature_cols) * 2:
+                logger.info("Insufficient samples for orthogonalization, skipping")
                 return df
-        
-            logger.info(f"Data cleaned: {len(feature_data)} rows, {len(feature_data.columns)} features")
-        
-            # Skip correlation-based orthogonalization if we don't have enough data
-            if len(feature_data) < len(feature_data.columns) * 2:
-                logger.warning("Insufficient samples for correlation analysis, using PCA instead")
-                return self._apply_simple_pca(df, feature_data, feature_cols)
-        
-            # Calculate correlation matrix with error handling
+            
+            # Calculate correlation matrix
             try:
                 corr_matrix = feature_data.corr()
-            
-                # Check if correlation calculation succeeded
-                if corr_matrix.isna().all().all() or corr_matrix.empty:
-                    logger.warning("Correlation matrix calculation failed, returning original data")
+                
+                # Find highly correlated groups with HIGH threshold (0.95)
+                highly_correlated_groups = self._find_correlated_groups(corr_matrix, self.orthogonal_threshold)
+                
+                if not highly_correlated_groups:
                     return df
                 
+                # Only orthogonalize the most correlated features
+                for group in highly_correlated_groups[:5]:  # Limit to 5 groups
+                    if len(group) < 2:
+                        continue
+                    
+                    try:
+                        # Just keep the most important feature from each group
+                        # (the one with highest variance)
+                        variances = feature_data[group].var()
+                        keep_feature = variances.idxmax()
+                        drop_features = [f for f in group if f != keep_feature]
+                        
+                        # Drop the redundant features
+                        df = df.drop(columns=drop_features, errors='ignore')
+                        
+                    except Exception as e:
+                        logger.warning(f"Error processing correlated group: {e}")
+                        continue
+                
             except Exception as e:
-                logger.warning(f"Correlation calculation failed: {e}, returning original data")
-                return df
-        
-            # Find correlated groups with relaxed threshold
-            highly_correlated_groups = self._find_correlated_groups(corr_matrix, 0.9)  # Increased threshold
-        
-            if not highly_correlated_groups:
-                logger.info("No highly correlated groups found, keeping original features")
-                return df
-        
-            logger.info(f"Found {len(highly_correlated_groups)} correlated groups")
-        
-            # Apply orthogonalization only to groups with sufficient data
-            orthogonal_features = feature_data.copy()
-            orthogonalized_count = 0
-        
-            for i, group in enumerate(highly_correlated_groups):
-                if len(group) < 2:
-                 continue
-                
-                try:
-                    group_data = feature_data[group].values
-                
-                    # Ensure we have enough samples (at least 2x the number of features)
-                    if group_data.shape[0] < group_data.shape[1] * 2:
-                        logger.warning(f"Group {i} has insufficient samples ({group_data.shape[0]} vs {group_data.shape[1]}), skipping")
-                        continue
-                
-                    # Check for valid data
-                    if np.any(np.isnan(group_data)) or np.any(np.isinf(group_data)):
-                        logger.warning(f"Group {i} has invalid data, skipping")
-                        continue
-                
-                    # Apply QR decomposition
-                    q, r = qr(group_data, mode='economic')
-                
-                    if q.shape[1] != len(group):
-                        logger.warning(f"QR decomposition dimension mismatch for group {i}, skipping")
-                        continue
-                
-                    # Replace with orthogonal features (keep original names with suffix)
-                    for j, feature in enumerate(group[:q.shape[1]]):  # Ensure we don't exceed dimensions
-                        new_name = f"{feature}_orth"
-                        orthogonal_features[new_name] = q[:, j]
-                        # Remove original
-                        if feature in orthogonal_features.columns:
-                            orthogonal_features = orthogonal_features.drop(feature, axis=1)
-                
-                    orthogonalized_count += 1
-                
-                except Exception as e:
-                    logger.warning(f"Error orthogonalizing group {i}: {e}, skipping group")
-                    continue
-        
-            # Update dataframe with orthogonal features
-            df_result = df.copy()
-        
-            # Remove old feature columns
-            for col in feature_cols:
-                if col in df_result.columns:
-                    df_result = df_result.drop(col, axis=1)
-        
-            # Add orthogonal features
-            for col in orthogonal_features.columns:
-                if col not in ['open', 'high', 'low', 'close', 'volume'] and 'target' not in col.lower():
-                    df_result[col] = orthogonal_features[col]
-        
-            final_rows = len(df_result)
-            logger.info(f"Orthogonalized {orthogonalized_count} feature groups. "
-                    f"Final data: {final_rows} rows, {len(df_result.columns)} total columns")
-        
-            # CRITICAL: Ensure we didn't lose all our data
-            if final_rows == 0:
-                logger.error("Orthogonalization resulted in 0 rows! Returning original data")
+                logger.warning(f"Correlation calculation failed: {e}")
                 return df
             
-            return df_result
-
-        except Exception as e:
-            logger.error(f"Critical error in orthogonalization: {e}")
-            logger.info("Returning original dataframe due to orthogonalization failure")
             return df
-
-    def _apply_simple_pca(self, df: pd.DataFrame, feature_data: pd.DataFrame, feature_cols: List[str]) -> pd.DataFrame:
-        """Apply simple PCA when correlation-based orthogonalization isn't feasible"""
-        try:
-            from sklearn.decomposition import PCA
-            from sklearn.preprocessing import StandardScaler
-        
-            # Scale features
-            scaler = StandardScaler()
-            scaled_data = scaler.fit_transform(feature_data)
-        
-            # Apply PCA to reduce to reasonable number of components
-            n_components = min(10, len(feature_cols), len(feature_data) - 1)
-            pca = PCA(n_components=n_components)
-            pca_features = pca.fit_transform(scaled_data)
-        
-            # Create PCA feature names
-            pca_df = pd.DataFrame(pca_features, 
-                                columns=[f'pca_{i}' for i in range(n_components)],
-                                index=feature_data.index)
-        
-            # Combine with original dataframe (removing original features)
-            df_result = df.copy()
-            for col in feature_cols:
-                if col in df_result.columns:
-                    df_result = df_result.drop(col, axis=1)
-        
-            # Add PCA features
-            for col in pca_df.columns:
-                df_result[col] = pca_df[col]
-        
-            logger.info(f"Applied PCA: reduced {len(feature_cols)} features to {n_components} components")
-            return df_result
-        
+            
         except Exception as e:
-            logger.error(f"PCA fallback failed: {e}, returning original data")
-            return df        
+            logger.error(f"Error in orthogonalization: {e}")
+            return df
     
     def _find_correlated_groups(self, corr_matrix: pd.DataFrame, threshold: float) -> List[List[str]]:
         """Find groups of highly correlated features"""
@@ -986,73 +550,62 @@ class MLTradingAnalyzer:
                 continue
             
             # Find features correlated with current feature
-            correlated = corr_matrix[feature][corr_matrix[feature] > threshold].index.tolist()
-            correlated = [f for f in correlated if f not in processed]
+            correlated = corr_matrix[feature][abs(corr_matrix[feature]) > threshold].index.tolist()
+            correlated = [f for f in correlated if f not in processed and f != feature]
             
-            if len(correlated) > 1:
-                groups.append(correlated)
-                processed.update(correlated)
+            if correlated:
+                group = [feature] + correlated
+                groups.append(group)
+                processed.update(group)
         
         return groups
     
     def select_features(self, df: pd.DataFrame, target_col: str = 'target_return') -> Tuple[pd.DataFrame, List[str]]:
-        """Advanced feature selection using multiple methods"""
+        """Feature selection - SIMPLIFIED"""
         try:
             # Get feature columns
             feature_cols = [col for col in df.columns if not any(x in col.lower() for x in 
                         ['open', 'high', 'low', 'close', 'volume', 'timestamp', 'target'])]
-        
-            if len(feature_cols) < self.feature_selection_k:
+            
+            if len(feature_cols) <= self.feature_selection_k:
                 return df, feature_cols
-        
-            # Prepare data - FIX: Replace fillna(method='ffill')
-            X = df[feature_cols].ffill().fillna(0)
+            
+            # Prepare data
+            X = df[feature_cols].ffill().bfill().fillna(0)
             y = df[target_col].fillna(0)
-        
-            # Remove rows with infinite values
+            
+            # Remove infinite values
             mask = np.isfinite(X).all(axis=1) & np.isfinite(y)
             X = X[mask]
             y = y[mask]
-        
+            
             if len(X) < 50:
                 return df, feature_cols[:self.feature_selection_k]
-        
-            # Method 1: Random Forest feature importance
-            rf = RandomForestRegressor(n_estimators=50, random_state=42, n_jobs=1)
+            
+            # Use simple Random Forest importance
+            rf = RandomForestRegressor(n_estimators=50, max_depth=5, random_state=42, n_jobs=1)
             rf.fit(X, y)
-            rf_importance = rf.feature_importances_
-        
-            # Method 2: Mutual information
-            mi_scores = mutual_info_regression(X, y, random_state=42)
-        
-            # Method 3: Statistical correlation
-            correlations = abs(X.corrwith(y))
-        
-            # Combine scores (normalized)
-            rf_importance = rf_importance / rf_importance.sum()
-            mi_scores = mi_scores / mi_scores.sum() if mi_scores.sum() > 0 else mi_scores
-            correlations = correlations / correlations.sum() if correlations.sum() > 0 else correlations
-        
-            # Weighted combination
-            combined_scores = (0.5 * rf_importance + 0.3 * mi_scores + 0.2 * correlations.values)
-        
-            # Select top features
-            top_indices = np.argsort(combined_scores)[-self.feature_selection_k:]
+            
+            # Get top features
+            importances = rf.feature_importances_
+            top_indices = np.argsort(importances)[-self.feature_selection_k:]
             selected_features = [feature_cols[i] for i in top_indices]
-        
-            logger.info(f"Selected {len(selected_features)} features from {len(feature_cols)}")
+            
             return df, selected_features
-        
+            
         except Exception as e:
             logger.error(f"Error in feature selection: {e}")
             return df, feature_cols[:self.feature_selection_k]
     
     def train_model(self, df: pd.DataFrame, symbol: str) -> Dict:
-        """Train ML model with time series validation"""
+        """Train ML model - SIMPLIFIED AND ROBUST"""
         try:
-            logger.info(f"Starting model training for {symbol} with {len(df)} rows")
             # Engineer features
             df = self.engineer_features(df)
+            
+            if df.empty or len(df) < 50:
+                logger.warning(f"Insufficient data after feature engineering for {symbol}")
+                return {}
             
             # Orthogonalize features
             df = self.orthogonalize_features(df)
@@ -1060,8 +613,12 @@ class MLTradingAnalyzer:
             # Select features
             df, selected_features = self.select_features(df)
             
+            if not selected_features:
+                logger.warning(f"No features selected for {symbol}")
+                return {}
+            
             # Prepare data
-            X = df[selected_features].ffill().fillna(0)
+            X = df[selected_features].ffill().bfill().fillna(0)
             y = df['target_return'].fillna(0)
             
             # Remove infinite values
@@ -1070,87 +627,56 @@ class MLTradingAnalyzer:
             y = y[mask]
             
             if len(X) < 50:
-                logger.warning(f"Insufficient data for {symbol}: {len(X)} rows after processing")
+                logger.warning(f"Insufficient clean data for {symbol}")
                 return {}
             
-            # Time series split for validation
-            tscv = TimeSeriesSplit(n_splits=self.cv_folds)
+            # Simple train/test split (last 20% for validation)
+            split_idx = int(len(X) * 0.8)
+            X_train, X_test = X[:split_idx], X[split_idx:]
+            y_train, y_test = y[:split_idx], y[split_idx:]
             
-            # Initialize models
-            models = {
-                'rf': RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=1),
-                'gbm': GradientBoostingRegressor(n_estimators=100, random_state=42)
-            }
-            
-            # Train and validate models
-            best_model = None
-            best_score = float('inf')
-            cv_scores = {}
-            
-            for name, model in models.items():
-                scores = []
-                for train_idx, val_idx in tscv.split(X):
-                    X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
-                    y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
-                    
-                    # Scale features
-                    scaler = RobustScaler()
-                    X_train_scaled = pd.DataFrame(scaler.fit_transform(X_train), 
-                                                columns=X_train.columns, index=X_train.index)
-                    X_val_scaled = pd.DataFrame(scaler.transform(X_val), 
-                                              columns=X_val.columns, index=X_val.index)
-                    
-                    # Train model
-                    model.fit(X_train_scaled, y_train)
-                    
-                    # Predict and score
-                    y_pred = model.predict(X_val_scaled)
-                    score = mean_squared_error(y_val, y_pred)
-                    scores.append(score)
-                
-                avg_score = np.mean(scores)
-                cv_scores[name] = avg_score
-                
-                if avg_score < best_score:
-                    best_score = avg_score
-                    best_model = name
-            
-            # Train final model on all data
-            final_model = models[best_model]
+            # Scale features
             scaler = RobustScaler()
-            X_scaled = pd.DataFrame(scaler.fit_transform(X), columns=X.columns, index=X.index)
-            final_model.fit(X_scaled, y)
+            X_train_scaled = scaler.fit_transform(X_train)
+            X_test_scaled = scaler.transform(X_test)
+            
+            # Train simple model
+            model = RandomForestRegressor(
+                n_estimators=50,
+                max_depth=5,
+                min_samples_split=10,
+                random_state=42,
+                n_jobs=1
+            )
+            model.fit(X_train_scaled, y_train)
+            
+            # Validate
+            y_pred = model.predict(X_test_scaled)
+            score = mean_squared_error(y_test, y_pred)
             
             # Get feature importance
-            if hasattr(final_model, 'feature_importances_'):
-                feature_importance = dict(zip(selected_features, final_model.feature_importances_))
-            else:
-                feature_importance = {}           
+            feature_importance = dict(zip(selected_features, model.feature_importances_))
             
-            shap_importance = {}     
-    
-            # Store model artifacts
-            self.models[symbol] = final_model
+            # Store model
+            self.models[symbol] = model
             self.scalers[symbol] = scaler
             self.feature_selectors[symbol] = selected_features
             self.feature_importance_history[symbol] = {
                 'feature_importance': feature_importance,
-                'shap_importance': shap_importance,
-                'cv_scores': cv_scores,
-                'best_model': best_model,
-                'best_score': best_score
+                'shap_importance': {},
+                'best_score': score,
+                'best_model': 'rf'
             }
             
-            logger.info(f"Model trained for {symbol} - Best: {best_model}, Score: {best_score:.6f}")
+            logger.info(f"Model trained for {symbol} - Score: {score:.6f}")
             
             return {
-                'model': final_model,
+                'model': model,
                 'scaler': scaler,
                 'features': selected_features,
                 'importance': feature_importance,
-                'shap_importance': shap_importance,
-                'cv_score': best_score,
-                'model_type': best_model
+                'cv_score': score,
+                'model_type': 'rf'
             }
             
         except Exception as e:
@@ -1160,30 +686,48 @@ class MLTradingAnalyzer:
     def predict_price_movement(self, df: pd.DataFrame, symbol: str) -> Dict:
         """Make prediction using trained model"""
         try:
+            # Normalize symbol
+            symbol = symbol.replace('/', '')
+            if not symbol.endswith('USDT'):
+                symbol = symbol + 'USDT'
+            
             if symbol not in self.models:
                 return {}
             
-            # Engineer features (same as training)
+            # Engineer features
             df = self.engineer_features(df)
+            if df.empty:
+                return {}
+            
             df = self.orthogonalize_features(df)
             
             # Use selected features
             selected_features = self.feature_selectors[symbol]
-            X = df[selected_features].ffill().fillna(0).tail(1)
+            
+            # Check if we have the required features
+            missing_features = [f for f in selected_features if f not in df.columns]
+            if missing_features:
+                logger.warning(f"Missing features for prediction: {missing_features}")
+                return {}
+            
+            X = df[selected_features].ffill().bfill().fillna(0).tail(1)
+            
+            if X.empty:
+                return {}
             
             # Scale features
             scaler = self.scalers[symbol]
-            X_scaled = pd.DataFrame(scaler.transform(X), columns=X.columns, index=X.index)
+            X_scaled = scaler.transform(X)
             
             # Make prediction
             model = self.models[symbol]
             prediction = model.predict(X_scaled)[0]
             
-            # Calculate confidence (based on model's training performance)
+            # Calculate confidence
             model_info = self.feature_importance_history[symbol]
-            base_confidence = 1.0 / (1.0 + model_info['best_score'])  # Convert MSE to confidence
+            base_confidence = 1.0 / (1.0 + model_info['best_score'])
             
-            # Adjust confidence based on feature importance sum
+            # Adjust confidence based on feature importance
             feature_importance_sum = sum(model_info['feature_importance'].values())
             confidence = base_confidence * min(1.0, feature_importance_sum / self.min_feature_importance_sum)
             
@@ -1191,178 +735,312 @@ class MLTradingAnalyzer:
                 'prediction': prediction,
                 'confidence': confidence,
                 'feature_importance': model_info['feature_importance'],
-                'shap_importance': model_info['shap_importance'],
-                'model_type': model_info['best_model']
+                'shap_importance': {},
+                'model_type': 'rf'
             }
             
         except Exception as e:
             logger.error(f"Error making prediction for {symbol}: {e}")
             return {}
     
-    async def generate_ml_signal(self, df: pd.DataFrame, symbol: str) -> Optional[TradingSignal]:
-        """Generate ML-based trading signal"""
+    def detect_market_regime(self, df: pd.DataFrame) -> Dict:
+        """Detect current market regime"""
         try:
+            if len(df) < 50:
+                return {'regime': 'unknown', 'confidence': 0}
+            
+            current_price = df['close'].iloc[-1]
+            
+            # ATR for volatility
+            atr_14 = talib.ATR(df['high'].values, df['low'].values, df['close'].values, 14)[-1]
+            atr_pct = atr_14 / current_price
+            
+            # Trend indicators
+            sma_20 = df['close'].rolling(20).mean().iloc[-1]
+            sma_50 = df['close'].rolling(50).mean().iloc[-1]
+            adx = talib.ADX(df['high'].values, df['low'].values, df['close'].values, 14)[-1]
+            
+            # RSI for momentum
+            rsi = talib.RSI(df['close'].values, 14)[-1]
+            
+            # Classify regime
+            regime = 'normal'
+            confidence = 0.5
+            
+            if atr_pct > 0.05:
+                regime = 'high_volatility'
+                confidence = 0.8
+            elif adx > 35:
+                if current_price > sma_20 > sma_50:
+                    regime = 'trending_up'
+                    confidence = 0.75
+                elif current_price < sma_20 < sma_50:
+                    regime = 'trending_down'
+                    confidence = 0.75
+            elif adx < 20:
+                regime = 'ranging'
+                confidence = 0.6
+            
+            return {
+                'regime': regime,
+                'confidence': confidence,
+                'indicators': {
+                    'atr_pct': atr_pct,
+                    'rsi': rsi,
+                    'adx': adx
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error detecting market regime: {e}")
+            return {'regime': 'unknown', 'confidence': 0}
+    
+    def evaluate_position_health(self, signal_data: Dict, df: pd.DataFrame) -> Dict:
+        """Evaluate the health of an active position"""
+        try:
+            # Normalize symbol for prediction
+            symbol = signal_data['coin']
+            if not symbol.endswith('USDT'):
+                symbol = symbol + 'USDT'
+            
+            current_price = df['close'].iloc[-1]
+            entry_price = signal_data['entry_price']
+            direction = signal_data['direction']
+            
+            # Calculate P&L
+            if direction == 'LONG':
+                pnl_pct = ((current_price - entry_price) / entry_price) * 100
+            else:
+                pnl_pct = ((entry_price - current_price) / entry_price) * 100
+            
+            # Get fresh ML prediction if model exists
+            ml_prediction = 0
+            ml_confidence = 0
+            
+            if symbol in self.models and len(df) >= 100:
+                prediction_result = self.predict_price_movement(df, symbol)
+                if prediction_result:
+                    ml_prediction = prediction_result.get('prediction', 0)
+                    ml_confidence = prediction_result.get('confidence', 0)
+            
+            # Check if prediction aligns with position
+            original_ml_pred = signal_data.get('ml_prediction', 0)
+            prediction_aligned = (ml_prediction * original_ml_pred) > 0 if original_ml_pred != 0 else True
+            
+            # Detect market regime
+            regime_info = self.detect_market_regime(df)
+            
+            # Calculate health score
+            health_score = 1.0
+            
+            if not prediction_aligned and abs(ml_prediction) > 0.01:
+                health_score *= 0.5
+            
+            if pnl_pct < -2:
+                health_score *= 0.7
+            elif pnl_pct > 2:
+                health_score = min(1.0, health_score * 1.2)
+            
+            # Determine recommendation
+            if health_score < 0.3:
+                recommendation = 'exit_immediately'
+            elif health_score < 0.5:
+                recommendation = 'exit_soon'
+            elif pnl_pct > 1.5:
+                recommendation = 'move_sl_breakeven'
+            elif pnl_pct > 5:
+                recommendation = 'trail_stop'
+            else:
+                recommendation = 'hold'
+            
+            return {
+                'health_score': health_score,
+                'pnl_pct': pnl_pct,
+                'ml_prediction': ml_prediction,
+                'ml_confidence': ml_confidence,
+                'prediction_aligned': prediction_aligned,
+                'regime': regime_info['regime'],
+                'current_price': current_price,
+                'recommendation': recommendation
+            }
+            
+        except Exception as e:
+            logger.error(f"Error evaluating position health: {e}")
+            return {'health_score': 0.5, 'recommendation': 'hold'}
+    
+    def calculate_dynamic_levels(self, signal_data: Dict, df: pd.DataFrame, 
+                                  evaluation: Dict) -> Dict:
+        """Calculate new dynamic stop loss and take profit levels"""
+        try:
+            current_price = evaluation['current_price']
+            direction = signal_data['direction']
+            recommendation = evaluation['recommendation']
+            
+            current_sl = signal_data['stop_loss']
+            current_tp = signal_data['take_profit']
+            entry_price = signal_data['entry_price']
+            
+            # Calculate ATR for adjustments
+            atr = talib.ATR(df['high'].values, df['low'].values, df['close'].values, 14)[-1]
+            
+            if recommendation == 'exit_immediately':
+                return {'action': 'exit', 'reason': 'Low health score'}
+            
+            elif recommendation == 'move_sl_breakeven':
+                if direction == 'LONG':
+                    new_sl = entry_price * 1.002
+                    new_sl = max(new_sl, current_sl)
+                else:
+                    new_sl = entry_price * 0.998
+                    new_sl = min(new_sl, current_sl)
+                return {'action': 'update', 'new_sl': new_sl, 'new_tp': current_tp,
+                        'reason': 'Moving to breakeven'}
+            
+            elif recommendation == 'trail_stop':
+                if direction == 'LONG':
+                    new_sl = current_price - (atr * 2)
+                    new_sl = max(new_sl, current_sl)
+                else:
+                    new_sl = current_price + (atr * 2)
+                    new_sl = min(new_sl, current_sl)
+                return {'action': 'update', 'new_sl': new_sl, 'new_tp': current_tp,
+                        'reason': 'Trailing stop'}
+            
+            return {'action': 'hold', 'reason': 'No adjustment needed'}
+            
+        except Exception as e:
+            logger.error(f"Error calculating dynamic levels: {e}")
+            return {'action': 'hold', 'reason': 'Error in calculation'}
+    
+    async def generate_ml_signal(self, df: pd.DataFrame, symbol: str) -> Optional[TradingSignal]:
+        """Generate ML-based trading signal - FIXED"""
+        try:
+            # Normalize symbol
+            symbol = symbol.replace('/', '')
+            if not symbol.endswith('USDT'):
+                symbol = symbol + 'USDT'
+            
             if len(df) < self.lookback_periods:
-                logger.warning(f"Insufficient data for {symbol}")
                 return None
-        
-            # Train model if not exists or retrain periodically
-            if symbol not in self.models or len(df) % 100 == 0:
+            
+            # Train model if not exists
+            if symbol not in self.models:
                 model_info = self.train_model(df, symbol)
                 if not model_info:
                     return None
-        
+            
             # Make prediction
             prediction_result = self.predict_price_movement(df, symbol)
             if not prediction_result:
                 return None
-        
+            
             prediction = prediction_result['prediction']
             model_confidence = prediction_result['confidence']
-        
+            
             # Quality gates
-            if (model_confidence < self.min_model_confidence or
-                abs(prediction) < 0.003):
+            if model_confidence < self.min_model_confidence or abs(prediction) < 0.003:
                 return None
-        
+            
             current_price = df['close'].iloc[-1]
-        
-            # Fetch symbol info for tick size and minimum price
+            
+            # Get symbol info
             try:
-                symbol_info = self.exchange.market(symbol)
-                tick_size = symbol_info['precision']['price'] if symbol_info else 0.00001
-                min_price = symbol_info['limits']['price']['min'] if symbol_info and symbol_info['limits']['price'] else 0.0000001
-    
-                # Ensure min_price is not None
-                if min_price is None:
+                if symbol in self.markets:
+                    symbol_info = self.markets[symbol]
+                    tick_size = symbol_info.get('precision', {}).get('price', 0.00001)
+                    min_price = symbol_info.get('limits', {}).get('price', {}).get('min', 0.0000001)
+                else:
+                    tick_size = 0.00001
                     min_price = 0.0000001
-        
-            except Exception as e:
-                logger.warning(f"Failed to fetch symbol info for {symbol}: {e}, using defaults")
+            except:
                 tick_size = 0.00001
                 min_price = 0.0000001
-        
-            # Ensure current price is valid
+            
             if current_price <= 0:
-                logger.error(f"Invalid current price for {symbol}: {current_price}")
                 return None
-    
-            if min_price and current_price < min_price:
-                logger.warning(f"Price below minimum for {symbol}: {current_price} < {min_price}")
-        
+            
             # Determine direction
             direction = 'LONG' if prediction > 0 else 'SHORT'
-        
-            # Calculate position sizing and risk management
+            
+            # Calculate risk parameters
             volatility = df['close'].pct_change().std() * np.sqrt(24)
-            atr_pct = (talib.ATR(df['high'].values, df['low'].values, df['close'].values, 14)[-1] / current_price)
-        
-            # Dynamic stop loss based on volatility and prediction confidence
+            atr = talib.ATR(df['high'].values, df['low'].values, df['close'].values, 14)[-1]
+            atr_pct = atr / current_price
+            
+            # Dynamic stop loss
             base_stop_pct = max(0.015, atr_pct * 1.5)
-            confidence_multiplier = 2.0 - model_confidence
-            stop_pct = base_stop_pct * confidence_multiplier
-            stop_pct = min(stop_pct, self.max_risk_per_trade / 100)
-        
-            # Ensure minimum price difference based on tick size
-            if current_price > 100:  # High-value coins like TAOUSDT
-                min_price_diff = current_price * 0.003  # 0.3%
-            elif current_price > 1:  # Mid-value coins like SUIUSDT
-                min_price_diff = current_price * 0.004  # 0.4%
-            else:  # Low-value coins like LINEAUSDT
-                min_price_diff = current_price * 0.006  # 0.6%
-
-            # Ensure it's at least 10 ticks
+            stop_pct = min(base_stop_pct * (2.0 - model_confidence), 0.03)
+            
+            # Minimum price differences
+            if current_price > 100:
+                min_price_diff = current_price * 0.005
+            elif current_price > 1:
+                min_price_diff = current_price * 0.007
+            else:
+                min_price_diff = current_price * 0.01
+            
             min_price_diff = max(min_price_diff, tick_size * 10)
-        
+            
+            # Calculate levels
             if direction == 'LONG':
                 stop_loss = current_price * (1 - stop_pct)
                 predicted_tp = current_price * (1 + abs(prediction))
-                min_tp = current_price + min_price_diff
+                min_tp = current_price + min_price_diff * 2
                 take_profit = max(min_tp, predicted_tp)
             else:
                 stop_loss = current_price * (1 + stop_pct)
                 predicted_tp = current_price * (1 - abs(prediction))
-                min_tp = current_price - min_price_diff
+                min_tp = current_price - min_price_diff * 2
                 take_profit = min(min_tp, predicted_tp)
-        
+            
+            # Apply precision
             try:
-                precise_current = self.exchange.price_to_precision(symbol, current_price)
-                precise_sl = self.exchange.price_to_precision(symbol, stop_loss)
-                precise_tp = self.exchange.price_to_precision(symbol, take_profit)
-    
-                if None in (precise_current, precise_sl, precise_tp):
-                    logger.error(f"Price precision failed for {symbol}: Current={precise_current}, SL={precise_sl}, TP={precise_tp}")
-                    return None
-        
-                current_price = float(precise_current)
-                stop_loss = float(precise_sl)
-                take_profit = float(precise_tp)
-    
-            except Exception as e:
-                logger.error(f"Price precision error for {symbol}: {e}")
-                return None
-        
+                current_price = float(self.exchange.price_to_precision(symbol, current_price))
+                stop_loss = float(self.exchange.price_to_precision(symbol, stop_loss))
+                take_profit = float(self.exchange.price_to_precision(symbol, take_profit))
+            except:
+                pass
+            
             # Validate prices
-            if stop_loss <= 0 or take_profit <= 0 or stop_loss < min_price or take_profit < min_price:
-                logger.error(f"Invalid prices for {symbol}: SL={stop_loss}, TP={take_profit}, min_price={min_price}")
-                return None
-        
-            # Validate price differences
-            if direction == 'LONG':
-                sl_diff = abs(current_price - stop_loss)
-                tp_diff = abs(take_profit - current_price)
-            else:
-                sl_diff = abs(stop_loss - current_price) 
-                tp_diff = abs(current_price - take_profit)
-
-            # Check minimum differences
-            if sl_diff < min_price_diff or tp_diff < min_price_diff:
-                logger.warning(f"Price difference too small for {symbol}: SL_diff={sl_diff:.6f}, TP_diff={tp_diff:.6f}, min_diff={min_price_diff:.6f}")
-                return None
-
-            # Validate price order based on direction
             if direction == 'LONG':
                 if not (stop_loss < current_price < take_profit):
-                    logger.error(f"Invalid LONG price order for {symbol}: SL={stop_loss}, Entry={current_price}, TP={take_profit}")
                     return None
             else:
                 if not (take_profit < current_price < stop_loss):
-                    logger.error(f"Invalid SHORT price order for {symbol}: TP={take_profit}, Entry={current_price}, SL={stop_loss}")
                     return None
-        
-            # Calculate final metrics
+            
+            # Calculate R:R ratio
             if direction == 'LONG':
                 risk = current_price - stop_loss
                 reward = take_profit - current_price
             else:
                 risk = stop_loss - current_price
                 reward = current_price - take_profit
-        
+            
             rr_ratio = reward / risk if risk > 0 else 0
-        
+            
             if rr_ratio < self.min_rr_ratio:
                 return None
-        
+            
             # Determine signal strength
-            if model_confidence > 0.9 and abs(prediction) > 0.05:
-                strength = SignalStrength.INSTITUTIONAL
-            elif model_confidence > 0.8 and abs(prediction) > 0.03:
+            if model_confidence > 0.85:
                 strength = SignalStrength.STRONG
-            else:
+            elif model_confidence > 0.75:
                 strength = SignalStrength.MODERATE
-        
-            # Create confluence factors
+            else:
+                strength = SignalStrength.WEAK
+            
+            # Create signal
+            signal_id = f"{symbol}_{int(datetime.now().timestamp())}_ML_{direction[0]}"
+            
             feature_importance = prediction_result['feature_importance']
-            top_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)[:5]
-            confluence_factors = [f"ML Feature: {feature} (imp: {importance:.3f})" 
-                                for feature, importance in top_features]
-        
-            signal_id = f"{symbol.replace('/', '')}_{int(datetime.now().timestamp())}_ML_{direction[0]}"
-        
+            top_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)[:3]
+            confluence_factors = [f"{feature}: {importance:.3f}" for feature, importance in top_features]
+            
             return TradingSignal(
                 signal_id=signal_id,
                 timestamp=datetime.now().isoformat(),
-                coin=symbol.replace('/USDT', ''),
+                coin=symbol.replace('USDT', ''),
                 direction=direction,
                 entry_price=round(current_price, 6),
                 current_price=round(current_price, 6),
@@ -1375,7 +1053,7 @@ class MLTradingAnalyzer:
                 analysis_summary={
                     'ml_prediction': round(prediction, 4),
                     'model_confidence': round(model_confidence, 3),
-                    'model_type': prediction_result['model_type'],
+                    'model_type': 'rf',
                     'volatility': round(volatility, 4),
                     'atr_pct': round(atr_pct, 4)
                 },
@@ -1384,48 +1062,46 @@ class MLTradingAnalyzer:
                 feature_importance=feature_importance,
                 model_confidence=model_confidence
             )
-        
+            
         except Exception as e:
             logger.error(f"Error generating ML signal for {symbol}: {e}")
             return None
     
     async def scan_all_coins(self) -> List[Dict]:
-        """Scan all coins using ML approach with batching for memory efficiency"""
+        """Scan all coins - OPTIMIZED BATCHING"""
         signals = []
         processed_count = 0
-    
+        
         # Randomize order
         import random
         coins_to_scan = self.coins.copy()
         random.shuffle(coins_to_scan)
-    
-        # BATCH PROCESSING CONFIGURATION
-        BATCH_SIZE = 8  # Process 8 coins at a time (adjust based on your memory)
-    
+        
+        # REDUCED batch size for memory efficiency
+        BATCH_SIZE = 5  # REDUCED from 8
+        
         logger.info(f"Starting ML scan of {len(coins_to_scan)} coins in batches of {BATCH_SIZE}")
-    
+        
         # Process coins in batches
         for batch_idx in range(0, len(coins_to_scan), BATCH_SIZE):
             batch = coins_to_scan[batch_idx:batch_idx + BATCH_SIZE]
             batch_signals = []
-        
-            logger.info(f"Processing batch {batch_idx//BATCH_SIZE + 1}/{(len(coins_to_scan)-1)//BATCH_SIZE + 1}")
-        
+            
             for symbol in batch:
                 try:
                     if len(signals) >= self.max_signals_per_scan:
                         break
-                
+                    
                     processed_count += 1
-                
-                    # Get extended market data for ML
+                    
+                    # Get market data
                     df = await self.get_market_data(symbol, '1h', self.lookback_periods)
                     if df.empty or len(df) < self.lookback_periods:
                         continue
-                
+                    
                     # Generate ML signal
                     signal = await self.generate_ml_signal(df, symbol)
-                
+                    
                     if signal:
                         # Convert to dict
                         signal_dict = {
@@ -1438,16 +1114,14 @@ class MLTradingAnalyzer:
                             'take_profit': signal.take_profit,
                             'stop_loss': signal.stop_loss,
                             'confidence': signal.confidence,
-                            'ml_prediction': signal.ml_prediction,  # ADD THIS LINE
+                            'ml_prediction': signal.ml_prediction,
                             'model_confidence': signal.model_confidence,
                             'analysis_data': {
                                 'ml_prediction': signal.analysis_summary['ml_prediction'],
                                 'model_confidence': signal.analysis_summary['model_confidence'],
-                                'model_type': signal.analysis_summary['model_type'],
-                                'confluence_factors': signal.confluence_factors,
+                                'model_type': 'rf',
                                 'risk_reward_ratio': signal.risk_reward_ratio,
                                 'risk_percentage': signal.risk_percentage,
-                                'signal_grade': 'institutional' if signal.strength == SignalStrength.INSTITUTIONAL else 'ml_based',
                                 'feature_importance_top5': dict(list(signal.feature_importance.items())[:5])
                             },
                             'indicators': {
@@ -1456,69 +1130,56 @@ class MLTradingAnalyzer:
                                 'volatility': signal.analysis_summary['volatility']
                             }
                         }
-                    
+                        
                         batch_signals.append(signal_dict)
                         signals.append(signal_dict)
-                        logger.info(f"ML Signal: {symbol} {signal.direction} "
-                                f"(Pred: {signal.ml_prediction:.4f}, Conf: {signal.model_confidence:.3f})")
-                
+                        logger.info(f"ML Signal: {symbol} {signal.direction} (Conf: {signal.model_confidence:.3f})")
+                    
                     # Rate limiting
-                    await asyncio.sleep(0.8)
-                
+                    await asyncio.sleep(0.5)
+                    
                 except Exception as e:
                     logger.error(f"Error scanning {symbol}: {e}")
                     continue
-        
-            # CRITICAL: Clear memory after each batch
-            if batch_idx + BATCH_SIZE < len(coins_to_scan):  # Don't clear on last batch
-                self._clear_batch_memory()
-                logger.info(f"Batch complete. Cleared memory. Found {len(batch_signals)} signals in this batch")
             
-                # Optional: Small delay between batches
-                await asyncio.sleep(2)
-        
+            # Clear memory after each batch
+            if batch_idx + BATCH_SIZE < len(coins_to_scan):
+                self._clear_batch_memory()
+            
             # Stop if we have enough signals
             if len(signals) >= self.max_signals_per_scan:
                 break
-    
+        
         logger.info(f"ML scan complete: {len(signals)} signals from {processed_count} coins")
         return signals
-
+    
     def _clear_batch_memory(self):
-        """Clear memory between batches to prevent OOM"""
+        """Clear memory between batches"""
         try:
-            # Clear cache
             self.cache.clear()
-        
-            # Force garbage collection
             import gc
             gc.collect()
-        
-            # Clear any temporary dataframes if stored
-            # This is safe because models are persisted separately
-        
         except Exception as e:
             logger.warning(f"Memory cleanup warning: {e}")
     
     async def get_current_price(self, symbol: str) -> float:
-        """Get current price"""
+        """Get current price - FIXED"""
         try:
-            # Symbol is already in correct format (e.g., TAOUSDT)
-            # Don't append /USDT if it's already a USDT pair
-            if symbol.endswith('USDT') and '/' not in symbol:
-                # This is already in Bybit format (TAOUSDT)
-                ticker = self.exchange.fetch_ticker(symbol)
-            else:
-                # Handle other formats if needed
-                ticker = self.exchange.fetch_ticker(symbol)
+            # Normalize symbol
+            symbol = symbol.replace('/', '')
+            if not symbol.endswith('USDT'):
+                symbol = symbol + 'USDT'
+            
+            ticker = self.exchange.fetch_ticker(symbol)
             return float(ticker.get('last', 0))
         except Exception as e:
             logger.error(f"Error fetching price for {symbol}: {e}")
             return 0.0
     
-    def save_models(self, filepath: str = 'ml_models.joblib'):
+    def save_models(self, filepath: str = 'models/ml_models.joblib'):
         """Save trained models"""
         try:
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
             model_data = {
                 'models': self.models,
                 'scalers': self.scalers,
@@ -1530,7 +1191,7 @@ class MLTradingAnalyzer:
         except Exception as e:
             logger.error(f"Error saving models: {e}")
     
-    def load_models(self, filepath: str = 'ml_models.joblib'):
+    def load_models(self, filepath: str = 'models/ml_models.joblib'):
         """Load trained models"""
         try:
             if os.path.exists(filepath):
@@ -1541,7 +1202,7 @@ class MLTradingAnalyzer:
                 self.feature_importance_history = model_data.get('feature_importance_history', {})
                 logger.info(f"Loaded {len(self.models)} models from {filepath}")
             else:
-                logger.warning(f"Model file {filepath} not found")
+                logger.info(f"No saved models found at {filepath}")
         except Exception as e:
             logger.error(f"Error loading models: {e}")
     

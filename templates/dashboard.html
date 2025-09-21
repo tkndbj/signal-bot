@@ -4,7 +4,6 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ML Crypto Trading Bot v3.0</title>
-    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
     <style>
       * {
         margin: 0;
@@ -298,7 +297,6 @@
       .signals-table tbody tr {
         border-bottom: 1px solid var(--border-color);
         transition: all 0.2s ease;
-        cursor: pointer;
       }
 
       .signals-table tbody tr:hover {
@@ -363,26 +361,6 @@
           var(--accent-blue)
         );
         transition: width 0.3s ease;
-      }
-
-      /* Feature Importance */
-      .feature-importance {
-        margin-top: 8px;
-        padding: 8px;
-        background: rgba(139, 92, 246, 0.1);
-        border-radius: 4px;
-        border: 1px solid rgba(139, 92, 246, 0.2);
-      }
-
-      .feature-tag {
-        display: inline-block;
-        background: rgba(139, 92, 246, 0.2);
-        color: var(--accent-purple);
-        padding: 2px 6px;
-        margin: 2px;
-        border-radius: 3px;
-        font-size: 9px;
-        font-weight: 600;
       }
 
       /* Logs */
@@ -500,31 +478,6 @@
         }
       }
 
-      /* ML Model Status */
-      .model-status {
-        padding: 15px;
-        background: rgba(139, 92, 246, 0.05);
-        border: 1px solid rgba(139, 92, 246, 0.2);
-        border-radius: 8px;
-        margin: 15px;
-      }
-
-      .model-metric {
-        display: flex;
-        justify-content: space-between;
-        padding: 6px 0;
-        font-size: 11px;
-      }
-
-      .model-metric .label {
-        color: var(--text-secondary);
-      }
-
-      .model-metric .value {
-        color: var(--accent-purple);
-        font-weight: 600;
-      }
-
       /* Scrollbar */
       ::-webkit-scrollbar {
         width: 8px;
@@ -573,96 +526,6 @@
           transform: translateY(0);
         }
       }
-
-      /* Chart Modal */
-      .modal {
-        display: none;
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        background: rgba(0, 0, 0, 0.9);
-        z-index: 1000;
-        animation: fadeIn 0.3s ease;
-      }
-
-      .modal-content {
-        position: relative;
-        background: var(--bg-secondary);
-        border: 2px solid var(--border-color);
-        border-radius: 8px;
-        width: 90%;
-        max-width: 1200px;
-        height: 80%;
-        margin: 5% auto;
-        overflow: hidden;
-        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8);
-      }
-
-      .modal-header {
-        padding: 15px 20px;
-        background: var(--bg-tertiary);
-        border-bottom: 2px solid var(--border-color);
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-      }
-
-      .close-btn {
-        background: none;
-        border: none;
-        color: var(--text-secondary);
-        font-size: 24px;
-        cursor: pointer;
-        transition: color 0.3s ease;
-      }
-
-      .close-btn:hover {
-        color: var(--accent-red);
-      }
-
-      .chart-container {
-        height: 60%;
-        background: var(--bg-primary);
-      }
-
-      .modal-tabs {
-        display: flex;
-        background: var(--bg-tertiary);
-        border-bottom: 1px solid var(--border-color);
-      }
-
-      .modal-tab {
-        flex: 1;
-        padding: 10px;
-        text-align: center;
-        cursor: pointer;
-        transition: all 0.3s ease;
-        font-size: 11px;
-        font-weight: 600;
-        text-transform: uppercase;
-      }
-
-      .modal-tab.active {
-        background: var(--bg-secondary);
-        color: var(--accent-purple);
-      }
-
-      .modal-tab:hover {
-        background: var(--bg-secondary);
-      }
-
-      .tab-content {
-        display: none;
-        padding: 20px;
-        height: calc(40% - 60px);
-        overflow-y: auto;
-      }
-
-      .tab-content.active {
-        display: block;
-      }
     </style>
   </head>
   <body>
@@ -678,8 +541,10 @@
           <span id="bot-status">ACTIVE</span>
         </div>
         <div class="status-item">
-          <span>MODELS:</span>
-          <span id="models-count" style="color: var(--accent-purple)">0</span>
+          <span>POSITIONS:</span>
+          <span id="active-positions" style="color: var(--accent-purple)"
+            >0</span
+          >
         </div>
         <div class="status-item">
           <span>UPTIME:</span>
@@ -707,15 +572,15 @@
         <div class="stats-grid">
           <div class="stat-card">
             <div class="stat-label">Total Balance</div>
-            <div class="stat-value" id="portfolio-balance">$1,000.00</div>
+            <div class="stat-value" id="portfolio-balance">$0.00</div>
             <div class="stat-change" id="portfolio-change-container">
               <span id="portfolio-change">+0.00%</span>
             </div>
           </div>
           <div class="stat-card">
-            <div class="stat-label">Active Signals</div>
+            <div class="stat-label">Active Positions</div>
             <div class="stat-value" id="active-signals">0</div>
-            <div class="stat-change neutral" id="total-signals">Total: 0</div>
+            <div class="stat-change neutral">Max: 8</div>
           </div>
           <div class="stat-card">
             <div class="stat-label">Win Rate</div>
@@ -734,30 +599,24 @@
         </div>
         <div class="stats-grid">
           <div class="stat-card ml-card">
-            <div class="stat-label">Model Accuracy</div>
-            <div class="stat-value ml-accent" id="ml-accuracy">0.0%</div>
-            <div class="stat-change neutral" id="prediction-count">
-              Predictions: 0
-            </div>
-          </div>
-          <div class="stat-card ml-card">
-            <div class="stat-label">Avg Confidence</div>
+            <div class="stat-label">Model Confidence</div>
             <div class="stat-value ml-accent" id="avg-confidence">0.0%</div>
-            <div class="stat-change neutral" id="model-type">Ensemble</div>
+            <div class="stat-change neutral">Min: 65%</div>
           </div>
           <div class="stat-card ml-card">
-            <div class="stat-label">Feature Quality</div>
-            <div class="stat-value ml-accent" id="feature-quality">0.0%</div>
-            <div class="stat-change neutral" id="orthogonality">
-              Orthogonal: 0%
-            </div>
+            <div class="stat-label">Predictions Made</div>
+            <div class="stat-value ml-accent" id="predictions-count">0</div>
+            <div class="stat-change neutral">RF Models</div>
           </div>
           <div class="stat-card ml-card">
-            <div class="stat-label">Sharpe Ratio</div>
-            <div class="stat-value ml-accent" id="sharpe-ratio">0.00</div>
-            <div class="stat-change neutral" id="training-status">
-              Training: Idle
-            </div>
+            <div class="stat-label">Features Used</div>
+            <div class="stat-value ml-accent" id="feature-count">15</div>
+            <div class="stat-change neutral">Orthogonalized</div>
+          </div>
+          <div class="stat-card ml-card">
+            <div class="stat-label">Training Status</div>
+            <div class="stat-value ml-accent" id="training-status">Ready</div>
+            <div class="stat-change neutral" id="models-trained">0 Models</div>
           </div>
         </div>
 
@@ -773,8 +632,8 @@
               border-bottom: 1px solid var(--border-color);
             "
           >
-            <span style="color: var(--text-secondary)">Best Trade:</span>
-            <span id="best-trade" class="positive">$0.00</span>
+            <span style="color: var(--text-secondary)">Real Balance:</span>
+            <span id="real-balance" class="neutral">$0.00</span>
           </div>
           <div
             style="
@@ -784,19 +643,8 @@
               border-bottom: 1px solid var(--border-color);
             "
           >
-            <span style="color: var(--text-secondary)">Worst Trade:</span>
-            <span id="worst-trade" class="negative">$0.00</span>
-          </div>
-          <div
-            style="
-              display: flex;
-              justify-content: space-between;
-              padding: 8px 0;
-              border-bottom: 1px solid var(--border-color);
-            "
-          >
-            <span style="color: var(--text-secondary)">Average Trade:</span>
-            <span id="avg-trade" class="neutral">$0.00</span>
+            <span style="color: var(--text-secondary)">Available:</span>
+            <span id="available-balance" class="neutral">$0.00</span>
           </div>
           <div
             style="
@@ -819,6 +667,17 @@
           >
             <span style="color: var(--text-secondary)">Max Drawdown:</span>
             <span id="max-drawdown" class="negative">0.00%</span>
+          </div>
+          <div
+            style="
+              display: flex;
+              justify-content: space-between;
+              padding: 8px 0;
+              border-bottom: 1px solid var(--border-color);
+            "
+          >
+            <span style="color: var(--text-secondary)">Leverage:</span>
+            <span class="neutral">15x</span>
           </div>
         </div>
 
@@ -853,8 +712,8 @@
               padding: 8px 0;
             "
           >
-            <span style="color: var(--text-secondary)">API Latency:</span>
-            <span id="latency" class="positive">-- ms</span>
+            <span style="color: var(--text-secondary)">Running:</span>
+            <span id="is-running" class="positive">Yes</span>
           </div>
         </div>
       </div>
@@ -864,9 +723,7 @@
         <div class="panel-header">
           <span>📡 ACTIVE ML SIGNALS</span>
           <div style="display: flex; gap: 10px">
-            <button class="btn ml-btn" onclick="triggerRetraining()">
-              RETRAIN
-            </button>
+            <button class="btn ml-btn" onclick="forceRescan()">SCAN NOW</button>
             <button class="btn" onclick="refreshData()">REFRESH</button>
           </div>
         </div>
@@ -881,20 +738,19 @@
                 <th>Current</th>
                 <th>Target</th>
                 <th>Stop</th>
-                <th>P&L</th>
-                <th>Progress</th>
+                <th>Live P&L</th>
                 <th>ML Conf</th>
-                <th>Prediction</th>
+                <th>Size</th>
               </tr>
             </thead>
             <tbody id="signals-tbody">
               <tr>
-                <td colspan="10">
+                <td colspan="9">
                   <div class="empty-state">
                     <div class="empty-state-icon">🧠</div>
                     <p>No active ML signals</p>
                     <p style="font-size: 11px; margin-top: 10px">
-                      Training models and analyzing patterns...
+                      Scanning markets for opportunities...
                     </p>
                   </div>
                 </td>
@@ -911,88 +767,126 @@
         </div>
       </div>
 
-      <!-- Right Panel - Analysis -->
+      <!-- Right Panel - Trade History -->
       <div class="panel">
         <div class="panel-header">
-            <span>📊 TRADE HISTORY</span>
+          <span>📊 TRADE HISTORY</span>
         </div>
-        <div style="padding: 15px; height: calc(100% - 45px); overflow-y: auto;">
-            <table style="width: 100%; font-size: 11px;">
-                <thead>
-                    <tr style="border-bottom: 2px solid var(--border-color);">
-                        <th style="text-align: left; padding: 8px 4px; color: var(--text-secondary);">COIN</th>
-                        <th style="text-align: left; padding: 8px 4px; color: var(--text-secondary);">DIR</th>
-                        <th style="text-align: right; padding: 8px 4px; color: var(--text-secondary);">ENTRY</th>
-                        <th style="text-align: right; padding: 8px 4px; color: var(--text-secondary);">EXIT</th>
-                        <th style="text-align: right; padding: 8px 4px; color: var(--text-secondary);">P&L</th>
-                        <th style="text-align: left; padding: 8px 4px; color: var(--text-secondary);">REASON</th>
-                    </tr>
-                </thead>
-                <tbody id="trade-history-tbody">
-                    <tr>
-                        <td colspan="6" style="text-align: center; padding: 20px; color: var(--text-secondary);">
-                            No trade history available
-                        </td>
-                    </tr>
-                </tbody>
-            </table>
+        <div style="padding: 15px; height: calc(50% - 45px); overflow-y: auto">
+          <table style="width: 100%; font-size: 11px">
+            <thead>
+              <tr style="border-bottom: 2px solid var(--border-color)">
+                <th
+                  style="
+                    text-align: left;
+                    padding: 8px 4px;
+                    color: var(--text-secondary);
+                  "
+                >
+                  COIN
+                </th>
+                <th
+                  style="
+                    text-align: left;
+                    padding: 8px 4px;
+                    color: var(--text-secondary);
+                  "
+                >
+                  DIR
+                </th>
+                <th
+                  style="
+                    text-align: right;
+                    padding: 8px 4px;
+                    color: var(--text-secondary);
+                  "
+                >
+                  P&L
+                </th>
+                <th
+                  style="
+                    text-align: left;
+                    padding: 8px 4px;
+                    color: var(--text-secondary);
+                  "
+                >
+                  EXIT
+                </th>
+              </tr>
+            </thead>
+            <tbody id="trade-history-tbody">
+              <tr>
+                <td
+                  colspan="4"
+                  style="
+                    text-align: center;
+                    padding: 20px;
+                    color: var(--text-secondary);
+                  "
+                >
+                  No trade history available
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
-    </div>
 
-    <!-- Chart Modal -->
-    <div id="chart-modal" class="modal">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h2 id="modal-title" style="color: var(--accent-purple)">
-            ML ANALYSIS
-          </h2>
-          <button class="close-btn" onclick="closeModal()">×</button>
+        <div class="panel-header">
+          <span>🎯 SUPPORTED COINS</span>
         </div>
-        <div class="chart-container" id="chart-container"></div>
-        <div class="modal-tabs">
-          <div class="modal-tab active" onclick="showTab('technical')">
-            Technical
+        <div style="padding: 15px; height: calc(50% - 45px); overflow-y: auto">
+          <div id="coins-list" style="display: flex; flex-wrap: wrap; gap: 6px">
+            <!-- Coins will be populated here -->
           </div>
-          <div class="modal-tab" onclick="showTab('ml')">ML Analysis</div>
-          <div class="modal-tab" onclick="showTab('features')">Features</div>
-        </div>
-        <div class="tab-content active" id="technical-tab">
-          <h3 style="color: var(--accent-green); margin-bottom: 10px">
-            Technical Indicators
-          </h3>
-          <div
-            id="indicators-data"
-            style="font-size: 12px; color: var(--text-secondary)"
-          ></div>
-        </div>
-        <div class="tab-content" id="ml-tab">
-          <h3 style="color: var(--accent-purple); margin-bottom: 10px">
-            ML Prediction Analysis
-          </h3>
-          <div
-            id="ml-analysis"
-            style="font-size: 12px; color: var(--text-secondary)"
-          ></div>
-        </div>
-        <div class="tab-content" id="features-tab">
-          <h3 style="color: var(--accent-blue); margin-bottom: 10px">
-            Feature Importance
-          </h3>
-          <div
-            id="feature-importance"
-            style="font-size: 12px; color: var(--text-secondary)"
-          ></div>
         </div>
       </div>
     </div>
 
     <script>
       let ws;
-      let chart;
       let currentSignals = [];
-      let mlModelStats = {};
       let startTime = new Date();
       let logContainer = document.getElementById("log-container");
+
+      // List of supported coins (from your Python code)
+      const SUPPORTED_COINS = [
+        "WLFI",
+        "DOGE",
+        "BONK",
+        "FLOKI",
+        "LINK",
+        "PEPE",
+        "NEAR",
+        "TIA",
+        "ARB",
+        "APT",
+        "TAO",
+        "FET",
+        "SUI",
+        "SEI",
+        "OP",
+        "LDO",
+        "SHIB",
+        "BOME",
+        "PENDLE",
+        "JUP",
+        "LINEA",
+        "UB",
+        "CGPT",
+        "POPCAT",
+        "WIF",
+        "OL",
+        "JASMY",
+        "BLUR",
+        "GMX",
+        "COMP",
+        "CRV",
+        "TRUMP",
+        "1INCH",
+        "SUSHI",
+        "YFI",
+        "MOVE",
+      ];
 
       // Initialize WebSocket
       function initWebSocket() {
@@ -1002,8 +896,8 @@
         ws = new WebSocket(wsUrl);
 
         ws.onopen = () => {
-          console.log("ML WebSocket connected");
-          addLog("INFO", "SYSTEM", "ML WebSocket connection established");
+          console.log("WebSocket connected");
+          addLog("INFO", "SYSTEM", "WebSocket connection established");
         };
 
         ws.onmessage = (event) => {
@@ -1033,65 +927,26 @@
 
       function handleWebSocketMessage(data) {
         switch (data.type) {
-          case "connection_established":
-            updateModelCount(data.features?.length || 0);
-            break;
-          case "new_ml_signal":
+          case "new_signal":
             addLog(
               "INFO",
-              "ML_SIGNAL",
-              `New ML ${data.signal.direction} signal: ${
-                data.signal.coin
-              } (Pred: ${(data.ml_prediction * 100).toFixed(1)}%)`
+              "SIGNAL",
+              `New ${data.signal.direction} signal: ${data.signal.coin}`
             );
             refreshData();
             break;
-          case "ml_signal_closed":
+          case "signal_closed":
             addLog(
               "INFO",
-              "ML_SIGNAL",
-              `ML Signal closed: ${data.coin} - ${
-                data.exit_reason
-              } (Accuracy: ${(data.ml_prediction_accuracy * 100).toFixed(1)}%)`
+              "SIGNAL",
+              `Signal closed: ${data.coin} - ${data.exit_reason}`
             );
             refreshData();
             break;
-          case "model_training_started":
-            updateStatusDot("training");
-            addLog("INFO", "ML_TRAINER", "Model retraining started");
-            document.getElementById("training-status").textContent =
-              "Training: Active";
-            break;
-          case "model_training_completed":
-            updateStatusDot("running");
-            addLog(
-              "INFO",
-              "ML_TRAINER",
-              `Model training completed: ${data.models_retrained} models retrained`
-            );
-            document.getElementById("training-status").textContent =
-              "Training: Idle";
-            refreshData();
-            break;
-          case "ml_scan_started":
-            updateStatusDot("scanning");
-            addLog(
-              "INFO",
-              "ML_SCANNER",
-              `ML scan #${data.scan_number} started (${data.models_active} models active)`
-            );
-            break;
-          case "ml_scan_completed":
-            updateStatusDot("running");
-            addLog(
-              "INFO",
-              "ML_SCANNER",
-              `ML scan completed: ${data.ml_predictions} predictions, ${data.new_signals} signals`
-            );
+          case "scan_completed":
+            updateStatusDot("active");
+            addLog("INFO", "SCANNER", `Scan #${data.scan_count} completed`);
             document.getElementById("scan-count").textContent = data.scan_count;
-            break;
-          case "price_update":
-            updateSignalPricesLive(data.updates);
             break;
         }
       }
@@ -1103,10 +958,6 @@
         dot.className = "status-dot";
 
         switch (status) {
-          case "training":
-            dot.classList.add("training");
-            statusText.textContent = "TRAINING";
-            break;
           case "scanning":
             dot.classList.add("scanning");
             statusText.textContent = "SCANNING";
@@ -1116,122 +967,16 @@
         }
       }
 
-      function updateModelCount(count) {
-        document.getElementById("models-count").textContent = count;
-      }
-
-      async function loadInitialLogs() {
-        try {
-          const response = await fetch("/api/logs");
-          const data = await response.json();
-
-          if (data.logs && data.logs.length > 0) {
-            logContainer.innerHTML = "";
-            data.logs.forEach((log) => {
-              addLogFromBackend(log);
-            });
-          }
-        } catch (error) {
-          console.error("Failed to load initial logs:", error);
-        }
-      }
-
-      async function loadTradeHistory() {
-    try {
-        const response = await fetch('/api/trades/history');
-        const data = await response.json();
-        
-        const tbody = document.getElementById('trade-history-tbody');
-        
-        if (!data.trades || data.trades.length === 0) {
-            tbody.innerHTML = `
-                <tr>
-                    <td colspan="6" style="text-align: center; padding: 20px; color: var(--text-secondary);">
-                        No trade history available
-                    </td>
-                </tr>
-            `;
-            return;
-        }
-        
-        tbody.innerHTML = data.trades.map(trade => {
-            const pnlClass = trade.pnl_usd >= 0 ? 'positive' : 'negative';
-            const dirClass = trade.direction === 'LONG' ? 'positive' : 'negative';
-            
-            return `
-                <tr style="border-bottom: 1px solid rgba(42, 42, 42, 0.3);">
-                    <td style="padding: 8px 4px; font-weight: 600; color: var(--accent-purple);">${trade.coin}</td>
-                    <td style="padding: 8px 4px;">
-                        <span class="${dirClass}" style="font-size: 10px; font-weight: 600;">${trade.direction}</span>
-                    </td>
-                    <td style="padding: 8px 4px; text-align: right;">${trade.entry_price.toFixed(4)}</td>
-                    <td style="padding: 8px 4px; text-align: right;">${trade.exit_price.toFixed(4)}</td>
-                    <td style="padding: 8px 4px; text-align: right;" class="${pnlClass}">
-                        <div style="font-weight: 600;">$${trade.pnl_usd.toFixed(2)}</div>
-                        <div style="font-size: 9px;">${trade.pnl_percentage.toFixed(1)}%</div>
-                    </td>
-                    <td style="padding: 8px 4px; font-size: 10px; color: var(--text-secondary);">${trade.exit_reason}</td>
-                </tr>
-            `;
-        }).join('');
-        
-    } catch (error) {
-        console.error('Failed to load trade history:', error);
-    }
-}
-
-      function addLogFromBackend(logData) {
-        const logEntry = document.createElement("div");
-        logEntry.className = "log-entry fade-in";
-
-        const timestamp = new Date(logData.timestamp).toLocaleTimeString();
-
-        logEntry.innerHTML = `
-        <span class="log-timestamp">[${timestamp}]</span>
-        <span class="log-level log-${logData.level}">${logData.level}</span>
-        <span style="color: var(--accent-purple);">[${logData.component}]</span>
-        <span>${logData.message}</span>
-        ${
-          logData.details
-            ? `<span style="color: var(--text-secondary);"> - ${logData.details}</span>`
-            : ""
-        }
-    `;
-
-        logContainer.insertBefore(logEntry, logContainer.firstChild);
-
-        while (logContainer.children.length > 50) {
-          logContainer.removeChild(logContainer.lastChild);
-        }
-      }
-
-      async function loadSystemUptime() {
-        try {
-          const response = await fetch("/api/system");
-          const data = await response.json();
-
-          if (data.uptime_seconds) {
-            startTime = new Date(Date.now() - data.uptime_seconds * 1000);
-            document.getElementById("scan-count").textContent =
-              data.scan_count || 0;
-            document.getElementById("models-count").textContent =
-              data.models_trained || 0;
-          }
-        } catch (error) {
-          console.error("Failed to load system stats:", error);
-        }
-      }
-
       function addLog(level, component, message) {
         const timestamp = new Date().toLocaleTimeString();
         const logEntry = document.createElement("div");
         logEntry.className = "log-entry fade-in";
         logEntry.innerHTML = `
-                <span class="log-timestamp">[${timestamp}]</span>
-                <span class="log-level log-${level}">${level}</span>
-                <span style="color: var(--accent-purple);">[${component}]</span>
-                <span>${message}</span>
-            `;
+          <span class="log-timestamp">[${timestamp}]</span>
+          <span class="log-level log-${level}">${level}</span>
+          <span style="color: var(--accent-purple);">[${component}]</span>
+          <span>${message}</span>
+        `;
 
         const container = document.getElementById("log-container");
         container.insertBefore(logEntry, container.firstChild);
@@ -1257,203 +1002,120 @@
           .padStart(2, "0")}`;
       }
 
-      function updateRecentAlerts(alerts) {
-        const alertsContainer = document.getElementById("recent-alerts");
+      async function loadTradeHistory() {
+        try {
+          const response = await fetch("/api/trades/history");
+          const data = await response.json();
 
-        if (!alerts || alerts.length === 0) {
-          alertsContainer.innerHTML = `
-            <div style="color: var(--text-secondary); font-size: 11px">
-                No recent alerts
-            </div>
-        `;
-          return;
+          const tbody = document.getElementById("trade-history-tbody");
+
+          if (!data.trades || data.trades.length === 0) {
+            tbody.innerHTML = `
+              <tr>
+                <td colspan="4" style="text-align: center; padding: 20px; color: var(--text-secondary);">
+                  No trade history available
+                </td>
+              </tr>
+            `;
+            return;
+          }
+
+          // Show last 10 trades
+          tbody.innerHTML = data.trades
+            .slice(0, 10)
+            .map((trade) => {
+              const pnlClass = trade.pnl_usd >= 0 ? "positive" : "negative";
+              const dirClass =
+                trade.direction === "LONG" ? "positive" : "negative";
+
+              return `
+              <tr style="border-bottom: 1px solid rgba(42, 42, 42, 0.3);">
+                <td style="padding: 6px 4px; font-weight: 600;">${trade.coin.replace(
+                  "USDT",
+                  ""
+                )}</td>
+                <td style="padding: 6px 4px;">
+                  <span class="${dirClass}" style="font-size: 10px;">${
+                trade.direction[0]
+              }</span>
+                </td>
+                <td style="padding: 6px 4px; text-align: right;" class="${pnlClass}">
+                  <div style="font-weight: 600;">$${trade.pnl_usd.toFixed(
+                    2
+                  )}</div>
+                  <div style="font-size: 9px;">${trade.pnl_percentage.toFixed(
+                    1
+                  )}%</div>
+                </td>
+                <td style="padding: 6px 4px; font-size: 9px; color: var(--text-secondary);">${
+                  trade.exit_reason
+                }</td>
+              </tr>
+            `;
+            })
+            .join("");
+        } catch (error) {
+          console.error("Failed to load trade history:", error);
         }
-
-        alertsContainer.innerHTML = alerts
-          .map((alert) => {
-            const pnlClass = alert.pnl_usd >= 0 ? "positive" : "negative";
-            const statusBadge =
-              alert.status === "active"
-                ? '<span style="color: var(--accent-purple); font-weight: 600;">●</span>'
-                : '<span style="color: var(--text-secondary);">○</span>';
-
-            const timeAgo = formatTimeAgo(new Date(alert.timestamp));
-
-            return `
-            <div style="
-                padding: 8px 0; 
-                border-bottom: 1px solid rgba(42, 42, 42, 0.3);
-                font-size: 11px;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-            ">
-                <div style="flex: 1;">
-                    <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 2px;">
-                        ${statusBadge}
-                        <span style="color: var(--accent-purple); font-weight: 600;">${
-                          alert.coin
-                        }</span>
-                        <span style="color: var(--text-secondary); font-size: 9px;">${
-                          alert.direction
-                        }</span>
-                    </div>
-                    <div style="color: var(--text-secondary); font-size: 10px;">
-                        Entry: $${alert.entry_price.toFixed(4)} • ${timeAgo}
-                    </div>
-                </div>
-                <div style="text-align: right;">
-                    <div class="${pnlClass}" style="font-weight: 600;">
-                        $${alert.pnl_usd.toFixed(2)}
-                    </div>
-                    <div style="color: var(--text-secondary); font-size: 9px;">
-                        ${alert.confidence}%
-                    </div>
-                </div>
-            </div>
-        `;
-          })
-          .join("");
-      }
-
-      function formatTimeAgo(date) {
-        const now = new Date();
-        const diffMs = now - date;
-        const diffMins = Math.floor(diffMs / 60000);
-        const diffHours = Math.floor(diffMins / 60);
-        const diffDays = Math.floor(diffHours / 24);
-
-        if (diffMins < 1) return "just now";
-        if (diffMins < 60) return `${diffMins}m ago`;
-        if (diffHours < 24) return `${diffHours}h ago`;
-        return `${diffDays}d ago`;
       }
 
       async function refreshData() {
-    try {
-        const [
-            signalsResp,
-            portfolioResp,
-            systemResp,
-            alertsResp,
-            modelsResp,
-        ] = await Promise.all([
+        try {
+          const [signalsResp, portfolioResp, systemResp] = await Promise.all([
             fetch("/api/signals"),
             fetch("/api/portfolio"),
-            fetch("/api/system").catch(() => ({ ok: false })),
-            fetch("/api/alerts"),
-            fetch("/api/ml/models").catch(() => ({
-                ok: false,
-                json: () => ({}),
-            })),
-        ]);
+            fetch("/api/system"),
+          ]);
 
-        const signalsData = await signalsResp.json();
-        const portfolioData = await portfolioResp.json();
-        const systemData = systemResp.ok ? await systemResp.json() : null;
-        const alertsData = await alertsResp.json();
-        const modelsData = modelsResp.ok ? await modelsResp.json() : {};
+          const signalsData = await signalsResp.json();
+          const portfolioData = await portfolioResp.json();
+          const systemData = await systemResp.json();
 
-        updateSignalsDisplay(signalsData.signals || []);
-        updatePortfolioStats(portfolioData.portfolio || {});
-        updateMLStats(signalsData.ml_metrics || {}, modelsData);       
-        
-        await loadTradeHistory(); // Add this here
-        
-        if (systemData) {
-            updateSystemStats(systemData);
+          updateSignalsDisplay(signalsData.signals || []);
+          updatePortfolioStats(portfolioData.portfolio || {});
+          updateSystemStats(systemData);
+
+          await loadTradeHistory();
+        } catch (error) {
+          console.error("Error refreshing data:", error);
+          addLog("ERROR", "SYSTEM", "Failed to refresh data");
         }
-    } catch (error) {
-        console.error("Error refreshing data:", error);
-        addLog("ERROR", "SYSTEM", "Failed to refresh data");
-    }
-}
-
-      function updateMLStats(mlMetrics, modelsData) {
-        // Update ML performance cards
-        document.getElementById("ml-accuracy").textContent = `${(
-          mlMetrics.avg_model_confidence * 100 || 0
-        ).toFixed(1)}%`;
-        document.getElementById("avg-confidence").textContent = `${(
-          mlMetrics.avg_model_confidence * 100 || 0
-        ).toFixed(1)}%`;
-        document.getElementById("feature-quality").textContent = `${(
-          mlMetrics.feature_orthogonality * 100 || 0
-        ).toFixed(1)}%`;
-        
-      }
-
-      function updateTopFeatures(models) {
-        const featuresContainer = document.getElementById("top-features");
-
-        // Aggregate feature importance across all models
-        const allFeatures = {};
-        Object.values(models).forEach((model) => {
-          if (model.top_features) {
-            Object.entries(model.top_features).forEach(
-              ([feature, importance]) => {
-                allFeatures[feature] = (allFeatures[feature] || 0) + importance;
-              }
-            );
-          }
-        });
-
-        // Sort and take top 10
-        const topFeatures = Object.entries(allFeatures)
-          .sort(([, a], [, b]) => b - a)
-          .slice(0, 10);
-
-        if (topFeatures.length === 0) {
-          featuresContainer.innerHTML = `
-            <div style="color: var(--text-secondary); font-size: 11px">
-              No feature data available
-            </div>
-          `;
-          return;
-        }
-
-        featuresContainer.innerHTML = topFeatures
-          .map(
-            ([feature, importance]) => `
-          <div style="display: flex; justify-content: space-between; padding: 4px 0; font-size: 11px;">
-            <span style="color: var(--text-secondary);">${feature.replace(
-              /_/g,
-              " "
-            )}</span>
-            <span style="color: var(--accent-purple); font-weight: 600;">${(
-              importance * 100
-            ).toFixed(1)}%</span>
-          </div>
-        `
-          )
-          .join("");
       }
 
       function updatePortfolioStats(portfolio) {
-        const balance = portfolio.real_balance || portfolio.total_balance || 1000;
-        const openPnl = portfolio.real_open_pnl || portfolio.open_pnl || 0;
+        // Update balance info
+        const realBalance = portfolio.real_balance || 0;
+        const availableBalance = portfolio.available_balance || 0;
+        const openPnl = portfolio.open_pnl || 0;
         const totalPnl = portfolio.total_pnl || 0;
-        const totalTrades = portfolio.total_trades || 0;
+        const winRate = portfolio.win_rate || 0;
         const winningTrades = portfolio.winning_trades || 0;
         const losingTrades = portfolio.losing_trades || 0;
-        const winRate = portfolio.win_rate || 0;
+        const maxDrawdown = portfolio.max_drawdown || 0;
 
         document.getElementById(
           "portfolio-balance"
-        ).textContent = `$${balance.toFixed(2)}`;
+        ).textContent = `$${realBalance.toFixed(2)}`;
+        document.getElementById(
+          "real-balance"
+        ).textContent = `$${realBalance.toFixed(2)}`;
+        document.getElementById(
+          "available-balance"
+        ).textContent = `$${availableBalance.toFixed(2)}`;
+        document.getElementById("open-pnl").textContent = `$${openPnl.toFixed(
+          2
+        )}`;
+        document.getElementById("open-pnl").className =
+          openPnl >= 0 ? "positive" : "negative";
 
-        const changePercent = (totalPnl / 1000) * 100;
+        const changePercent =
+          realBalance > 0 ? (totalPnl / realBalance) * 100 : 0;
         const changeElement = document.getElementById("portfolio-change");
         changeElement.textContent = `${
           totalPnl >= 0 ? "+" : ""
         }${changePercent.toFixed(2)}%`;
         changeElement.className = totalPnl >= 0 ? "positive" : "negative";
 
-        document.getElementById("active-signals").textContent =
-          currentSignals.length;
-        document.getElementById(
-          "total-signals"
-        ).textContent = `Total: ${totalTrades}`;
         document.getElementById("win-rate").textContent = `${winRate.toFixed(
           1
         )}%`;
@@ -1468,104 +1130,92 @@
         ).textContent = `${changePercent.toFixed(2)}%`;
         document.getElementById("pnl-percentage").className =
           totalPnl >= 0 ? "positive" : "negative";
-
-        // Update detailed metrics
-        document.getElementById("best-trade").textContent = `$${(
-          portfolio.best_trade || 0
-        ).toFixed(2)}`;
-        document.getElementById("worst-trade").textContent = `$${(
-          portfolio.worst_trade || 0
-        ).toFixed(2)}`;
-        document.getElementById("avg-trade").textContent = `$${(
-          portfolio.avg_pnl || 0
-        ).toFixed(2)}`;
-        document.getElementById("open-pnl").textContent = `$${(
-          portfolio.open_pnl || 0
-        ).toFixed(2)}`;
-        document.getElementById("max-drawdown").textContent = `${(
-          portfolio.max_drawdown || 0
-        ).toFixed(2)}%`;
-
-        // Update Sharpe ratio
-        document.getElementById("sharpe-ratio").textContent = (
-          portfolio.sharpe_ratio || 0
-        ).toFixed(2);
+        document.getElementById(
+          "max-drawdown"
+        ).textContent = `${maxDrawdown.toFixed(2)}%`;
       }
 
       function updateSignalsDisplay(signals) {
         currentSignals = signals;
         const tbody = document.getElementById("signals-tbody");
 
+        document.getElementById("active-signals").textContent = signals.length;
+        document.getElementById("active-positions").textContent =
+          signals.length;
+
         if (!signals || signals.length === 0) {
           tbody.innerHTML = `
-                    <tr>
-                        <td colspan="10">
-                            <div class="empty-state">
-                                <div class="empty-state-icon">🧠</div>
-                                <p>No active ML signals</p>
-                                <p style="font-size: 11px; margin-top: 10px;">Training models and analyzing patterns...</p>
-                            </div>
-                        </td>
-                    </tr>
-                `;
+            <tr>
+              <td colspan="9">
+                <div class="empty-state">
+                  <div class="empty-state-icon">🧠</div>
+                  <p>No active ML signals</p>
+                  <p style="font-size: 11px; margin-top: 10px;">
+                    Scanning markets for opportunities...
+                  </p>
+                </div>
+              </td>
+            </tr>
+          `;
           return;
         }
 
         tbody.innerHTML = signals
           .map((signal) => {
-            const pnl = signal.live_pnl_usd !== undefined ? signal.live_pnl_usd : 
-            signal.pnl_usd !== undefined ? signal.pnl_usd : 0;
-            const pnlPercent = signal.live_pnl_percentage !== undefined ? signal.live_pnl_percentage :
-                  signal.pnl_percentage !== undefined ? signal.pnl_percentage : 0;
-            const tpProgress = signal.tp_progress || 0;
-            const mlConfidence = signal.model_confidence || 0;
-            const mlPrediction = signal.ml_prediction || 0;
-            console.log(`Signal ${signal.coin}: live_pnl_usd=${signal.live_pnl_usd}, pnl_usd=${signal.pnl_usd}, live_pnl_percentage=${signal.live_pnl_percentage}`);
+            // Use the live P&L from backend
+            const pnl = signal.live_pnl_usd || 0;
+            const pnlPercent = signal.live_pnl_percentage || 0;
+            const mlConfidence =
+              signal.model_confidence || signal.confidence / 100 || 0;
+            const positionValue = signal.position_value || 0;
+
+            // Normalize coin name (remove USDT if present)
+            const coinDisplay = signal.coin.replace("USDT", "");
+
             return `
-                    <tr onclick="showChart('${signal.coin}', '${
-              signal.signal_id
-            }')" class="fade-in ml-signal">
-                        <td style="font-weight: bold; color: var(--accent-purple);">${
-                          signal.coin
-                        }</td>
-                        <td><span class="signal-badge badge-${signal.direction.toLowerCase()}">${
+            <tr class="fade-in ml-signal">
+              <td style="font-weight: bold; color: var(--accent-purple);">${coinDisplay}</td>
+              <td><span class="signal-badge badge-${signal.direction.toLowerCase()}">${
               signal.direction
             }</span></td>
-                        <td>${signal.entry_price.toFixed(6)}</td>
-                        <td>${(
-                          signal.current_price || signal.entry_price
-                        ).toFixed(6)}</td>
-                        <td style="color: var(--accent-green);">${signal.take_profit.toFixed(
-                          6
-                        )}</td>
-                        <td style="color: var(--accent-red);">${signal.stop_loss.toFixed(
-                          6
-                        )}</td>
-                        <td class="${pnl >= 0 ? "positive" : "negative"}">
-                            $${pnl.toFixed(2)}<br>
-                            <small>${pnlPercent.toFixed(1)}%</small>
-                        </td>
-                        <td>
-                            <div class="progress-bar">
-                                <div class="progress-fill" style="width: ${Math.min(
-                                  100,
-                                  Math.max(0, tpProgress)
-                                )}%"></div>
-                            </div>
-                            <small>${tpProgress.toFixed(0)}%</small>
-                        </td>
-                        <td style="text-align: center;">
-                            <span class="ml-confidence-badge">${(
-                              mlConfidence * 100
-                            ).toFixed(0)}%</span>
-                        </td>
-                        <td style="text-align: center; color: var(--accent-purple);">
-                            ${(mlPrediction * 100).toFixed(1)}%
-                        </td>
-                    </tr>
-                `;
+              <td>${signal.entry_price.toFixed(6)}</td>
+              <td>${(signal.current_price || signal.entry_price).toFixed(
+                6
+              )}</td>
+              <td style="color: var(--accent-green);">${signal.take_profit.toFixed(
+                6
+              )}</td>
+              <td style="color: var(--accent-red);">${signal.stop_loss.toFixed(
+                6
+              )}</td>
+              <td class="${pnl >= 0 ? "positive" : "negative"}">
+                <div style="font-weight: 600;">$${pnl.toFixed(2)}</div>
+                <div style="font-size: 10px;">${pnlPercent.toFixed(1)}%</div>
+              </td>
+              <td style="text-align: center;">
+                <span class="ml-confidence-badge">${(
+                  mlConfidence * 100
+                ).toFixed(0)}%</span>
+              </td>
+              <td style="text-align: center;">
+                <div style="font-size: 11px;">$${positionValue.toFixed(2)}</div>
+              </td>
+            </tr>
+          `;
           })
           .join("");
+
+        // Calculate average confidence for ML stats
+        if (signals.length > 0) {
+          const avgConfidence =
+            signals.reduce(
+              (sum, s) => sum + (s.model_confidence || s.confidence / 100 || 0),
+              0
+            ) / signals.length;
+          document.getElementById("avg-confidence").textContent = `${(
+            avgConfidence * 100
+          ).toFixed(1)}%`;
+        }
       }
 
       function updateSystemStats(system) {
@@ -1579,311 +1229,71 @@
             "memory-usage"
           ).textContent = `${system.memory_usage.toFixed(1)}%`;
         }
+        if (system.is_running !== undefined) {
+          document.getElementById("is-running").textContent = system.is_running
+            ? "Yes"
+            : "No";
+          document.getElementById("is-running").className = system.is_running
+            ? "positive"
+            : "negative";
+        }
+        if (system.scan_count !== undefined) {
+          document.getElementById("scan-count").textContent = system.scan_count;
+          document.getElementById("predictions-count").textContent =
+            system.scan_count;
+        }
+
+        // Update uptime if provided
+        if (system.uptime_seconds) {
+          startTime = new Date(Date.now() - system.uptime_seconds * 1000);
+        }
       }
 
-      async function showChart(coin, signalId) {
-    const modal = document.getElementById("chart-modal");
-    modal.style.display = "block";
-    document.getElementById("modal-title").textContent = `${coin} ML ANALYSIS`;
-
-    // Clear previous chart
-    const chartContainer = document.getElementById("chart-container");
-    chartContainer.innerHTML = '';
-    
-    // Wait a moment for the DOM to update
-    await new Promise(resolve => setTimeout(resolve, 100));
-    
-    // Check if LightweightCharts is loaded
-    if (typeof LightweightCharts === 'undefined') {
-        console.error('LightweightCharts library not loaded');
-        chartContainer.innerHTML = '<div style="color: #ff3366; padding: 20px; text-align: center;">Loading chart library...</div>';
-        
-        // Try to load it dynamically
-        const script = document.createElement('script');
-        script.src = 'https://unpkg.com/lightweight-charts@latest/dist/lightweight-charts.standalone.production.js';
-        script.onload = () => {
-            showChart(coin, signalId); // Retry after loading
-        };
-        document.head.appendChild(script);
-        return;
-    }
-
-    try {
-        // Create the chart
-        const chart = LightweightCharts.createChart(chartContainer, {
-            width: chartContainer.clientWidth,
-            height: chartContainer.clientHeight,
-            layout: {
-                background: { type: 'solid', color: '#0a0a0a' },
-                textColor: '#ffffff',
-            },
-            grid: {
-                vertLines: { color: '#2a2a2a' },
-                horzLines: { color: '#2a2a2a' },
-            },
-            crosshair: {
-                mode: LightweightCharts.CrosshairMode.Normal,
-            },
-            rightPriceScale: {
-                borderColor: '#2a2a2a',
-            },
-            timeScale: {
-                borderColor: '#2a2a2a',
-                timeVisible: true,
-                secondsVisible: false,
-            },
-        });
-
-        // Find the signal
-        const signal = currentSignals.find((s) => s.signal_id === signalId);
-        
-        if (!signal) {
-            chartContainer.innerHTML = '<div style="color: #ff3366; padding: 20px; text-align: center;">Signal not found</div>';
-            return;
-        }
-
-        // Try different methods based on library version
-        let candlestickSeries;
-        
-        try {
-            // Try the standard method first
-            candlestickSeries = chart.addCandlestickSeries({
-                upColor: '#00ff88',
-                downColor: '#ff3366',
-                borderUpColor: '#00ff88',
-                borderDownColor: '#ff3366',
-                wickUpColor: '#00ff88',
-                wickDownColor: '#ff3366',
-            });
-        } catch (e) {
-            // If that fails, try alternative methods
-            console.log('Trying alternative chart series method...');
-            
-            // Some versions use addCandleSeries
-            if (typeof chart.addCandleSeries === 'function') {
-                candlestickSeries = chart.addCandleSeries({
-                    upColor: '#00ff88',
-                    downColor: '#ff3366',
-                    borderUpColor: '#00ff88',
-                    borderDownColor: '#ff3366',
-                    wickUpColor: '#00ff88',
-                    wickDownColor: '#ff3366',
-                });
-            } else if (typeof chart.addLineSeries === 'function') {
-                // Fallback to line series if candlestick isn't available
-                console.log('Using line series as fallback');
-                candlestickSeries = chart.addLineSeries({
-                    color: '#00ff88',
-                    lineWidth: 2,
-                });
-            } else {
-                throw new Error('No suitable chart series method found');
-            }
-        }
-
-        // Generate sample data for now (since Binance might be blocked or rate-limited)
-        const now = Math.floor(Date.now() / 1000);
-        const basePrice = signal.entry_price;
-        const chartData = [];
-        
-        for (let i = 99; i >= 0; i--) {
-            const time = now - (i * 3600); // Hourly data
-            const randomWalk = (Math.random() - 0.5) * 0.02; // ±2% variation
-            const open = basePrice * (1 + randomWalk);
-            const close = basePrice * (1 + randomWalk + (Math.random() - 0.5) * 0.005);
-            const high = Math.max(open, close) * (1 + Math.random() * 0.005);
-            const low = Math.min(open, close) * (1 - Math.random() * 0.005);
-            
-            chartData.push({
-                time: time,
-                open: open,
-                high: high,
-                low: low,
-                close: close
-            });
-        }
-        
-        // Set the data
-        candlestickSeries.setData(chartData);
-        
-        // Add price lines with proper error handling
-        const addPriceLine = (options) => {
-            try {
-                if (typeof candlestickSeries.createPriceLine === 'function') {
-                    return candlestickSeries.createPriceLine(options);
-                }
-            } catch (e) {
-                console.log('Price line creation failed:', e);
-            }
-        };
-        
-        // Add entry line
-        addPriceLine({
-            price: signal.entry_price,
-            color: '#00aaff',
-            lineWidth: 2,
-            lineStyle: 2,
-            axisLabelVisible: true,
-            title: 'Entry',
-        });
-        
-        // Add take profit line
-        addPriceLine({
-            price: signal.take_profit,
-            color: '#00ff88',
-            lineWidth: 2,
-            lineStyle: 0,
-            axisLabelVisible: true,
-            title: 'TP',
-        });
-        
-        // Add stop loss line
-        addPriceLine({
-            price: signal.stop_loss,
-            color: '#ff3366',
-            lineWidth: 2,
-            lineStyle: 0,
-            axisLabelVisible: true,
-            title: 'SL',
-        });
-        
-        // Add current price if available
-        if (signal.current_price) {
-            addPriceLine({
-                price: signal.current_price,
-                color: '#ffaa00',
-                lineWidth: 1,
-                lineStyle: 1,
-                axisLabelVisible: true,
-                title: 'Current',
-            });
-        }
-        
-        // Fit content
-        chart.timeScale().fitContent();
-        
-        // Store chart reference for cleanup
-        chartContainer.chartInstance = chart;
-
-        // Update the info tabs
-        document.getElementById("indicators-data").innerHTML = `
-            RSI: ${signal.indicators?.rsi || "N/A"}<br>
-            MACD: ${signal.indicators?.macd?.toFixed(6) || "N/A"}<br>
-            Volume Ratio: ${signal.indicators?.volume_ratio || "N/A"}<br>
-            ATR %: ${signal.indicators?.atr_percentage || "N/A"}%<br>
-            ML Prediction: ${(signal.ml_prediction * 100 || 0).toFixed(2)}%<br>
-            Volatility: ${signal.indicators?.volatility?.toFixed(4) || "N/A"}
-        `;
-
-        document.getElementById("ml-analysis").innerHTML = `
-            <strong>ML Prediction:</strong> ${(signal.ml_prediction * 100 || 0).toFixed(2)}%<br>
-            <strong>Model Confidence:</strong> ${(signal.model_confidence * 100 || 0).toFixed(1)}%<br>
-            <strong>Model Type:</strong> ${signal.analysis_data?.model_type || "Unknown"}<br>
-            <strong>Direction:</strong> ${signal.direction}<br>
-            <strong>Risk/Reward:</strong> ${signal.analysis_data?.risk_reward_ratio || "N/A"}<br>
-            <strong>Signal Grade:</strong> ${signal.analysis_data?.signal_grade || "ML Based"}<br><br>
-            <strong>ML Factors:</strong><br>
-            ${(signal.analysis_data?.confluence_factors || []).map((f) => `• ${f}`).join("<br>")}
-        `;
-
-        const features = signal.analysis_data?.feature_importance_top5 || signal.feature_importance_top3 || {};
-        document.getElementById("feature-importance").innerHTML =
-            Object.keys(features).length > 0
-                ? Object.entries(features)
-                    .sort(([, a], [, b]) => b - a)
-                    .map(([feature, importance]) =>
-                        `<div class="feature-tag">${feature.replace(/_/g, " ")}: ${(importance * 100).toFixed(1)}%</div>`
-                    ).join("")
-                : "No feature importance data available";
-
-    } catch (error) {
-        console.error('Chart creation error:', error);
-        chartContainer.innerHTML = `<div style="color: #ff3366; padding: 20px; text-align: center;">Chart temporarily unavailable. Signal data displayed in tabs below.</div>`;
-    }
-}
-
-      function showTab(tabName) {
-        // Hide all tabs
-        document
-          .querySelectorAll(".modal-tab")
-          .forEach((tab) => tab.classList.remove("active"));
-        document
-          .querySelectorAll(".tab-content")
-          .forEach((content) => content.classList.remove("active"));
-
-        // Show selected tab
-        document
-          .querySelector(
-            `.modal-tab:nth-child(${
-              tabName === "technical" ? 1 : tabName === "ml" ? 2 : 3
-            })`
-          )
-          .classList.add("active");
-        document.getElementById(`${tabName}-tab`).classList.add("active");
+      function displaySupportedCoins() {
+        const coinsList = document.getElementById("coins-list");
+        coinsList.innerHTML = SUPPORTED_COINS.map((coin) => {
+          return `<span style="
+            background: rgba(139, 92, 246, 0.1);
+            border: 1px solid rgba(139, 92, 246, 0.3);
+            color: var(--accent-purple);
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 600;
+          ">${coin}</span>`;
+        }).join("");
       }
 
-      function closeModal() {
-    const chartContainer = document.getElementById("chart-container");
-    
-    // Clean up chart instance and event listeners
-    if (chartContainer.chartInstance) {
-        if (chartContainer.resizeHandler) {
-            window.removeEventListener('resize', chartContainer.resizeHandler);
-        }
-        chartContainer.chartInstance.remove();
-        chartContainer.chartInstance = null;
-    }
-    
-    chartContainer.innerHTML = '';
-    document.getElementById("chart-modal").style.display = "none";
-}
-
-      async function triggerRetraining() {
+      async function forceRescan() {
         try {
-          const response = await fetch("/api/control/retrain", {
-            method: "POST",
-          });
-          const data = await response.json();
-          addLog("INFO", "ML_TRAINER", data.message);
+          addLog("INFO", "SCANNER", "Triggering manual scan...");
+          // Optionally, you can add an API endpoint to trigger scan manually
+          refreshData();
         } catch (error) {
-          addLog("ERROR", "ML_TRAINER", "Failed to trigger retraining");
+          addLog("ERROR", "SCANNER", "Failed to trigger scan");
         }
       }
 
       // Initialize
       document.addEventListener("DOMContentLoaded", async () => {
-        await loadSystemUptime();
-        await loadInitialLogs();
+        displaySupportedCoins();
         initWebSocket();
         refreshData();
 
         setInterval(updateUptime, 1000);
-        setInterval(refreshData, 60000); // Refresh every minute
-        setInterval(loadSystemUptime, 30000);
+        setInterval(refreshData, 30000); // Refresh every 30 seconds
 
-        // Simulate system stats
-        setInterval(() => {
-          document.getElementById("cpu-usage").textContent = `${(
-            Math.random() * 30 +
-            10
-          ).toFixed(1)}%`;
-          document.getElementById("memory-usage").textContent = `${(
-            Math.random() * 40 +
-            30
-          ).toFixed(1)}%`;
-          document.getElementById("latency").textContent = `${Math.floor(
-            Math.random() * 50 + 20
-          )} ms`;
-        }, 5000);
+        // Update system stats periodically
+        setInterval(async () => {
+          try {
+            const response = await fetch("/api/system");
+            const data = await response.json();
+            updateSystemStats(data);
+          } catch (error) {
+            console.error("Failed to fetch system stats:", error);
+          }
+        }, 10000);
       });
-
-      // Close modal on outside click
-      window.onclick = (event) => {
-        const modal = document.getElementById("chart-modal");
-        if (event.target === modal) {
-          closeModal();
-        }
-      };
     </script>
   </body>
 </html>
