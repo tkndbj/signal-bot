@@ -1165,9 +1165,11 @@ class MLTradingAnalyzer:
     async def get_current_price(self, symbol: str) -> float:
         """Get current price - FIXED"""
         try:
-            # Normalize symbol
+            # Fix double USDT issue
             symbol = symbol.replace('/', '')
-            if not symbol.endswith('USDT'):
+            if symbol.endswith('USDTUSDT'):
+                symbol = symbol.replace('USDTUSDT', 'USDT')
+            elif not symbol.endswith('USDT'):
                 symbol = symbol + 'USDT'
             
             ticker = self.exchange.fetch_ticker(symbol)

@@ -212,7 +212,11 @@ class TradingBot:
             
             # Check which database signals are no longer on exchange
             for signal in db_signals:
-                coin_symbol = self.normalize_symbol(signal['coin'])
+                # Fix double USDT issue
+                coin = signal['coin']
+                if coin.endswith('USDT'):
+                    coin = coin.replace('USDT', '')
+                coin_symbol = self.normalize_symbol(coin)
                 
                 if coin_symbol not in open_positions:
                     # Position closed on exchange but still active in DB
@@ -325,7 +329,9 @@ class TradingBot:
                 amount=quantity,
                 params={
                     'positionIdx': 0,
-                    'timeInForce': 'IOC'
+                    'timeInForce': 'IOC',
+                    'orderType': 'Market',
+                    'category': 'linear'
                 }
             )
             
