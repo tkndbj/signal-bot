@@ -367,9 +367,31 @@ class TradingBot:
             
             # Wait for order to process
             await asyncio.sleep(2)
+
+            logger.info(f"Order response: {order}")            
             
-            # Check if order filled
-            if order and (order.get('status') in ['closed', 'filled', 'Filled'] or (order.get('filled') and order.get('filled') > 0)):
+            # Check if order actually has an ID (was created)
+            if order and order.get('id'):
+                # Log what we got
+                logger.info(f"Order status: {order.get('status')}, filled: {order.get('filled')}")
+    
+                # For Bybit, a market order with an ID should be filled immediately
+                # If status is None, we need to fetch the actual order status
+                if order.get('status') is None:
+                    await asyncio.sleep(1)
+                    try:
+                        actual_order = self.analyzer.exchange.fetch_order(order['id'], symbol)
+                        logger.info(f"Fetched order status: {actual_order.get('status')}, filled: {actual_order.get('filled')}")
+                        if actual_order.get('status') in ['closed', 'filled', 'Filled'] or actual_order.get('filled', 0) > 0:
+                            order = actual_order  # Update with actual order data
+                        else:
+                            logger.error(f"Order not filled: {actual_order}")
+                            return False
+                    except Exception as e:
+                        logger.error(f"Error fetching order status: {e}")
+                        # Assume it worked if we can't check
+    
+            if order.get('status') in ['closed', 'filled', 'Filled'] or order.get('filled', 0) > 0:
                 # Set stop loss and take profit
                 await self.set_sl_tp(
                     symbol,
