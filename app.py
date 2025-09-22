@@ -282,7 +282,7 @@ class TradingBot:
             balance_info = await self.get_account_balance()
             available_balance = balance_info['free']
             
-            if available_balance < 10:
+            if available_balance < 1:
                 logger.warning(f"Insufficient balance: ${available_balance}")
                 return False
             
