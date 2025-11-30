@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Simplified ML-Enhanced Crypto Trading Bot for Bybit
-Production-ready version with clean architecture
+Production-Ready ML-Enhanced Crypto Trading Bot for Bybit
+Multi-Strategy: Trend Following + Funding Rate + ML Filter
 """
 
 import asyncio
@@ -23,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # Import our modules
 from database import Database
-from enhanced_trading_analyzer_v2 import MLTradingAnalyzer
+from strategy_engine import StrategyEngine as MLTradingAnalyzer
 
 # Configure logging
 logging.basicConfig(
@@ -36,27 +36,59 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
 class TradingBot:
     def __init__(self):
         # Core components
         self.database = Database()
         self.analyzer = MLTradingAnalyzer(database=self.database)
         
-        # Configuration
-        self.position_check_interval = 60  # Check positions every minute
-        self.scan_interval = 120  # Scan for signals every 10 minutes
-        self.max_concurrent_positions = 8
-        self.position_size_percent = 0.15  # Use 15% of balance
-        self.leverage = 15
-        self.min_confidence_threshold = 0.65
-        self.model_update_interval = 3600  # Update models every hour
+        # ============================================================
+        # RISK MANAGEMENT CONFIGURATION - PRODUCTION SETTINGS
+        # ============================================================
+        
+        # Position sizing - CONSERVATIVE for sustainable profitability
+        self.position_size_percent = 0.05  # 5% of balance per trade (was 15%)
+        self.leverage = 5                   # 5x leverage (was 15x)
+        self.max_concurrent_positions = 4   # Max 4 positions (was 8)
+        # Max total exposure: 5% * 5 * 4 = 100% (was 1800%!)
+        
+        # Risk limits - Circuit breakers
+        self.max_daily_loss_percent = 5.0   # Stop trading if down 5% in a day
+        self.max_drawdown_percent = 15.0    # Stop trading if drawdown exceeds 15%
+        self.min_confidence_threshold = 0.70  # Higher bar for signals (was 0.65)
+        self.min_rr_ratio = 2.5             # Minimum risk:reward ratio
+        
+        # Win rate tracking for adaptive sizing
+        self.recent_trades_window = 20      # Track last 20 trades
+        self.min_win_rate_for_full_size = 0.40  # Reduce size if win rate below 40%
+        
+        # Timing intervals
+        self.position_check_interval = 30   # Check positions every 30 seconds (was 60)
+        self.scan_interval = 300            # Scan for signals every 5 minutes (was 120)
+        self.funding_check_interval = 3600  # Check funding rates every hour
+        self.model_update_interval = 7200   # Update models every 2 hours (was 1 hour)
         self.last_model_update = time.time()
         
-        # FastAPI setup
+        # Daily tracking
+        self.daily_pnl = 0.0
+        self.daily_trades = 0
+        self.daily_wins = 0
+        self.daily_losses = 0
+        self.last_daily_reset = datetime.now().date()
+        self.starting_balance_today = 0.0
+        
+        # Trading state
+        self.trading_enabled = True  # Can be disabled by risk management
+        
+        # ============================================================
+        # FASTAPI SETUP
+        # ============================================================
+        
         self.app = FastAPI(
-            title="ML Crypto Trading Bot",
-            version="2.0.0",
-            description="Simplified production-ready trading bot for Bybit"
+            title="Production ML Crypto Trading Bot",
+            version="3.0.0",
+            description="Multi-strategy trading bot: Trend Following + Funding Rate + ML Filter"
         )
         
         self.app.add_middleware(
@@ -77,16 +109,24 @@ class TradingBot:
         self.scan_count = 0
         self.startup_time = datetime.now()
         
-        # Signal management - simplified
-        self.active_positions: Dict[str, Dict] = {}  # symbol -> position data
+        # Active positions tracking
+        self.active_positions: Dict[str, Dict] = {}
         
         # Performance metrics
         self.performance_metrics = {
             'total_scans': 0,
             'signals_generated': 0,
+            'signals_filtered': 0,
+            'trades_executed': 0,
             'win_rate': 0,
-            'total_pnl': 0
+            'total_pnl': 0,
+            'sharpe_ratio': 0,
+            'max_drawdown': 0,
+            'profit_factor': 0
         }
+        
+        # Recent trades for adaptive sizing
+        self.recent_trade_results = []
         
         # Setup
         self.setup_routes()
@@ -98,20 +138,36 @@ class TradingBot:
         # Graceful shutdown
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
+        
+        # Log configuration
+        logger.info("=" * 70)
+        logger.info("PRODUCTION TRADING BOT INITIALIZED")
+        logger.info("=" * 70)
+        logger.info(f"Leverage: {self.leverage}x (reduced from 15x)")
+        logger.info(f"Position Size: {self.position_size_percent * 100}% (reduced from 15%)")
+        logger.info(f"Max Positions: {self.max_concurrent_positions} (reduced from 8)")
+        logger.info(f"Max Exposure: {self.leverage * self.position_size_percent * self.max_concurrent_positions * 100}%")
+        logger.info(f"Daily Loss Limit: {self.max_daily_loss_percent}%")
+        logger.info(f"Max Drawdown Limit: {self.max_drawdown_percent}%")
+        logger.info(f"Min Confidence: {self.min_confidence_threshold}")
+        logger.info(f"Min R:R Ratio: {self.min_rr_ratio}")
+        logger.info("=" * 70)
 
     def signal_handler(self, signum, frame):
         """Handle graceful shutdown"""
-        logger.info(f"Received signal {signum}. Shutting down...")
+        logger.info(f"Received signal {signum}. Shutting down gracefully...")
         self.analyzer.save_models()
         self.running = False
         sys.exit(0)
 
     def normalize_symbol(self, symbol: str) -> str:
         """Normalize symbol to consistent format (e.g., BTCUSDT)"""
-        # Remove any slashes, colons, or /USDT suffixes
         symbol = symbol.replace('/', '').replace(':', '')
         
-        # Ensure it ends with USDT if it doesn't already
+        # Fix double USDT issue
+        if symbol.endswith('USDTUSDT'):
+            symbol = symbol.replace('USDTUSDT', 'USDT')
+        
         if not symbol.endswith('USDT'):
             symbol = symbol + 'USDT'
         
@@ -122,6 +178,9 @@ class TradingBot:
         try:
             logger.info("Initializing bot state...")
             
+            # Reset daily tracking
+            self._check_daily_reset()
+            
             # Clean stale signals (older than 24 hours)
             active_signals = self.database.get_active_signals()
             current_time = datetime.now()
@@ -130,7 +189,7 @@ class TradingBot:
             for signal in active_signals:
                 try:
                     signal_time = datetime.fromisoformat(signal['timestamp'].replace('Z', '+00:00'))
-                    if (current_time - signal_time).total_seconds() > 86400:  # 24 hours
+                    if (current_time - signal_time).total_seconds() > 86400:
                         self.database.close_signal(
                             signal['signal_id'],
                             signal['entry_price'],
@@ -143,7 +202,10 @@ class TradingBot:
             if stale_count > 0:
                 logger.info(f"Cleaned {stale_count} stale signals")
             
-            # Schedule initial sync after startup
+            # Load recent trade results for adaptive sizing
+            self._load_recent_trade_results()
+            
+            # Schedule initial sync
             asyncio.create_task(self.initial_sync())
             
             # Clean old data
@@ -154,10 +216,90 @@ class TradingBot:
         except Exception as e:
             logger.error(f"Error during bot initialization: {e}")
 
+    def _check_daily_reset(self):
+        """Reset daily tracking at midnight"""
+        today = datetime.now().date()
+        if today > self.last_daily_reset:
+            logger.info(f"New trading day. Previous day P&L: ${self.daily_pnl:.2f}")
+            logger.info(f"Previous day: {self.daily_wins}W / {self.daily_losses}L")
+            
+            self.daily_pnl = 0.0
+            self.daily_trades = 0
+            self.daily_wins = 0
+            self.daily_losses = 0
+            self.last_daily_reset = today
+            self.trading_enabled = True  # Re-enable trading for new day
+            self.starting_balance_today = 0.0  # Will be set on first balance check
+
+    def _load_recent_trade_results(self):
+        """Load recent trade results for adaptive position sizing"""
+        try:
+            with self.database.get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT pnl_usd FROM trade_results 
+                    WHERE status = 'closed' 
+                    ORDER BY updated_at DESC 
+                    LIMIT ?
+                ''', (self.recent_trades_window,))
+                
+                self.recent_trade_results = [row['pnl_usd'] for row in cursor.fetchall()]
+                
+        except Exception as e:
+            logger.error(f"Error loading recent trades: {e}")
+            self.recent_trade_results = []
+
+    def _calculate_recent_win_rate(self) -> float:
+        """Calculate win rate from recent trades"""
+        if not self.recent_trade_results:
+            return 0.5  # Default to 50% if no history
+        
+        wins = sum(1 for pnl in self.recent_trade_results if pnl > 0)
+        return wins / len(self.recent_trade_results)
+
+    def _get_adaptive_position_size(self, base_confidence: float) -> float:
+        """
+        Calculate adaptive position size based on:
+        1. Recent win rate
+        2. Signal confidence
+        3. Current drawdown
+        """
+        base_size = self.position_size_percent
+        
+        # Adjust for win rate
+        recent_win_rate = self._calculate_recent_win_rate()
+        if recent_win_rate < self.min_win_rate_for_full_size:
+            # Reduce size by up to 50% if win rate is poor
+            win_rate_multiplier = 0.5 + (recent_win_rate / self.min_win_rate_for_full_size) * 0.5
+            base_size *= win_rate_multiplier
+            logger.info(f"Reduced position size due to win rate {recent_win_rate:.1%}")
+        
+        # Adjust for confidence (scale from 50% to 100% of base size)
+        confidence_multiplier = 0.5 + (base_confidence * 0.5)
+        base_size *= confidence_multiplier
+        
+        # Adjust for current drawdown
+        portfolio = self.database.get_portfolio_stats()
+        current_drawdown = portfolio.get('max_drawdown', 0)
+        if current_drawdown > 10:
+            # Reduce size if in significant drawdown
+            drawdown_multiplier = max(0.5, 1 - (current_drawdown - 10) / 20)
+            base_size *= drawdown_multiplier
+            logger.info(f"Reduced position size due to drawdown {current_drawdown:.1f}%")
+        
+        return base_size
+
     async def initial_sync(self):
         """Initial sync with exchange after startup"""
-        await asyncio.sleep(3)  # Wait for everything to initialize
+        await asyncio.sleep(3)
         logger.info("Running initial position sync...")
+        
+        # Get starting balance for the day
+        balance = await self.get_account_balance()
+        if self.starting_balance_today == 0:
+            self.starting_balance_today = balance['total']
+            logger.info(f"Starting balance today: ${self.starting_balance_today:.2f}")
+        
         await self.sync_positions_with_exchange()
 
     async def get_account_balance(self) -> Dict:
@@ -186,13 +328,57 @@ class TradingBot:
             logger.error(f"Error fetching balance: {e}")
             return {'free': 0, 'used': 0, 'total': 0}
 
+    async def check_risk_limits(self) -> bool:
+        """
+        Check if we're within risk limits.
+        Returns True if trading is allowed, False otherwise.
+        """
+        try:
+            # Get current balance
+            balance = await self.get_account_balance()
+            current_balance = balance['total']
+            
+            # Set starting balance if not set
+            if self.starting_balance_today == 0:
+                self.starting_balance_today = current_balance
+            
+            # Check daily loss limit
+            daily_loss_limit = self.starting_balance_today * (self.max_daily_loss_percent / 100)
+            current_daily_loss = self.starting_balance_today - current_balance + self.daily_pnl
+            
+            if current_daily_loss > daily_loss_limit:
+                logger.warning(f"⚠️ DAILY LOSS LIMIT REACHED: ${current_daily_loss:.2f} > ${daily_loss_limit:.2f}")
+                logger.warning("Trading disabled for the rest of the day")
+                self.trading_enabled = False
+                return False
+            
+            # Check max drawdown
+            portfolio = self.database.get_portfolio_stats()
+            current_drawdown = portfolio.get('max_drawdown', 0)
+            
+            if current_drawdown > self.max_drawdown_percent:
+                logger.warning(f"⚠️ MAX DRAWDOWN EXCEEDED: {current_drawdown:.1f}% > {self.max_drawdown_percent}%")
+                logger.warning("Trading disabled until drawdown recovers")
+                self.trading_enabled = False
+                return False
+            
+            # Check if we have minimum balance
+            if current_balance < 10:
+                logger.warning(f"⚠️ INSUFFICIENT BALANCE: ${current_balance:.2f}")
+                self.trading_enabled = False
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error checking risk limits: {e}")
+            return True  # Allow trading on error to not lock out
+
     async def sync_positions_with_exchange(self):
         """Sync database with actual Bybit positions"""
         try:
-            # Get all positions from Bybit
             positions = self.analyzer.exchange.fetch_positions(params={'category': 'linear'})
             
-            # Map of open positions on Bybit
             open_positions = {}
             for pos in positions:
                 if pos['contracts'] > 0:
@@ -201,65 +387,65 @@ class TradingBot:
                     if symbol.endswith('USDTUSDT'):
                         symbol = symbol.replace('USDTUSDT', 'USDT')
                     symbol = self.normalize_symbol(symbol)
+                    
                     open_positions[symbol] = {
                         'contracts': pos['contracts'],
                         'side': pos['side'],
                         'unrealizedPnl': pos.get('unrealizedPnl', 0),
                         'markPrice': pos.get('markPrice', 0),
-                        'entryPrice': pos.get('avgPrice', pos.get('markPrice', 0))
+                        'entryPrice': pos.get('avgPrice', pos.get('markPrice', 0)),
+                        'leverage': pos.get('leverage', self.leverage)
                     }
-                    logger.info(f"Bybit position found: {symbol} - {pos['contracts']} contracts")
+                    logger.debug(f"Bybit position: {symbol} - {pos['contracts']} contracts")
             
-            # Update active_positions
             self.active_positions = open_positions
             
             # Get active signals from database
             db_signals = self.database.get_active_signals()
             
-            # Check which database signals are no longer on exchange
+            # Close orphaned signals (in DB but not on exchange)
             for signal in db_signals:
-                # Fix double USDT issue
                 coin_symbol = self.normalize_symbol(signal['coin'])
                 
                 if coin_symbol not in open_positions:
-                    # Position closed on exchange but still active in DB
                     logger.info(f"Closing orphaned signal: {coin_symbol}")
                     
-                    # Get exit price
                     try:
                         ticker = self.analyzer.exchange.fetch_ticker(coin_symbol)
                         exit_price = ticker['last']
                     except:
                         exit_price = signal.get('current_price', signal['entry_price'])
                     
-                    # Close in database
-                    self.database.close_signal(
+                    pnl = self.database.close_signal(
                         signal['signal_id'],
                         exit_price,
                         "Position closed on exchange"
                     )
+                    
+                    # Update daily tracking
+                    if pnl:
+                        self._record_trade_result(pnl)
             
-            # Check for positions on exchange not in database
+            # Track untracked positions (on exchange but not in DB)
             for symbol, pos_data in open_positions.items():
-                found_in_db = False
-                for signal in db_signals:
-                    if self.normalize_symbol(signal['coin']) == symbol:
-                        found_in_db = True
-                        break
+                found_in_db = any(
+                    self.normalize_symbol(sig['coin']) == symbol 
+                    for sig in db_signals
+                )
                 
                 if not found_in_db:
                     logger.warning(f"Found untracked position: {symbol}")
-                    # Create tracking entry
                     signal_data = {
                         'signal_id': f"SYNC_{symbol}_{int(time.time())}",
                         'timestamp': datetime.now().isoformat(),
                         'coin': symbol,
                         'direction': 'LONG' if pos_data['side'] == 'long' else 'SHORT',
                         'entry_price': pos_data['entryPrice'],
-                        'take_profit': pos_data['entryPrice'] * 1.02,
-                        'stop_loss': pos_data['entryPrice'] * 0.98,
+                        'take_profit': pos_data['entryPrice'] * (1.03 if pos_data['side'] == 'long' else 0.97),
+                        'stop_loss': pos_data['entryPrice'] * (0.97 if pos_data['side'] == 'long' else 1.03),
                         'confidence': 50,
                         'position_value': pos_data['contracts'] * pos_data['markPrice'],
+                        'strategy_type': 'synced',
                         'analysis_data': {'synced_from_exchange': True}
                     }
                     self.database.save_signal(signal_data)
@@ -270,24 +456,58 @@ class TradingBot:
             logger.error(f"Error syncing positions: {e}")
             return {}
 
+    def _record_trade_result(self, pnl: float):
+        """Record trade result for tracking"""
+        self.daily_pnl += pnl
+        self.daily_trades += 1
+        
+        if pnl > 0:
+            self.daily_wins += 1
+        else:
+            self.daily_losses += 1
+        
+        # Add to recent trades for adaptive sizing
+        self.recent_trade_results.insert(0, pnl)
+        if len(self.recent_trade_results) > self.recent_trades_window:
+            self.recent_trade_results.pop()
+        
+        # Update performance metrics
+        if self.daily_trades > 0:
+            self.performance_metrics['win_rate'] = (self.daily_wins / self.daily_trades) * 100
+        self.performance_metrics['total_pnl'] += pnl
+
     async def execute_trade(self, signal_data: Dict) -> bool:
-        """Execute real trade on Bybit"""
+        """Execute real trade on Bybit with proper risk management"""
         try:
             symbol = self.normalize_symbol(signal_data['coin'])
-            signal_data['coin'] = symbol  # Update to normalized symbol
+            signal_data['coin'] = symbol
             
-            logger.info(f"Executing trade for {symbol}")
+            logger.info(f"Attempting to execute trade for {symbol}")
+            
+            # Risk checks
+            if not self.trading_enabled:
+                logger.warning("Trading disabled due to risk limits")
+                return False
+            
+            if not await self.check_risk_limits():
+                return False
             
             # Get balance
             balance_info = await self.get_account_balance()
             available_balance = balance_info['free']
             
-            if available_balance < 1:
-                logger.warning(f"Insufficient balance: ${available_balance}")
+            if available_balance < 10:
+                logger.warning(f"Insufficient balance: ${available_balance:.2f}")
                 return False
             
-            # Calculate position size
-            account_equity = available_balance * self.position_size_percent
+            # Get confidence for adaptive sizing
+            confidence = signal_data.get('model_confidence', signal_data.get('confidence', 50) / 100)
+            
+            # Calculate adaptive position size
+            adaptive_size = self._get_adaptive_position_size(confidence)
+            
+            # Calculate position value
+            account_equity = available_balance * adaptive_size
             position_value = account_equity * self.leverage
             
             # Get current price
@@ -296,57 +516,53 @@ class TradingBot:
             
             # Get symbol info for precision
             symbol_info = self.analyzer.exchange.market(symbol)
-            
             min_qty = float(symbol_info.get('limits', {}).get('amount', {}).get('min', 0.001))
             qty_precision = int(symbol_info.get('precision', {}).get('amount', 8))
             
             # Calculate quantity
             base_quantity = position_value / current_price
             
-            # Apply precision
             if qty_precision == 0:
                 quantity = max(int(base_quantity), 1)
             else:
                 quantity = round(base_quantity, qty_precision)
             
-            # Ensure minimum quantity
             if quantity < min_qty:
                 quantity = min_qty
             
             final_position_value = quantity * current_price
-            logger.info(f"Position: {quantity} contracts = ${final_position_value:.2f}")
+            margin_used = final_position_value / self.leverage
+            
+            # Check if position value is reasonable
+            if final_position_value < 5:
+                logger.warning(f"Position value too small: ${final_position_value:.2f}")
+                return False
+            
+            logger.info(f"Position: {quantity} contracts @ ${current_price:.4f}")
+            logger.info(f"Value: ${final_position_value:.2f}, Margin: ${margin_used:.2f}")
             
             # Set leverage
             try:
                 self.analyzer.exchange.set_leverage(self.leverage, symbol)
             except:
-                pass  # Some symbols might have fixed leverage
+                pass
             
             # Place order
             side = 'buy' if signal_data['direction'] == 'LONG' else 'sell'
-
-            # Set order parameters - Bybit needs these specific params
-            order_params = {
-                'positionIdx': 0,
-                'timeInForce': 'IOC',
-                'orderType': 'Market',
-                'category': 'linear'
-            }
-
-            # For market buy orders, Bybit via CCXT requires price to calculate cost
+            
             if side == 'buy':
                 order = self.analyzer.exchange.create_order(
                     symbol=symbol,
                     type='market',
                     side=side,
                     amount=quantity,
-                    price=current_price,  # Required for market buy on Bybit
+                    price=current_price,
                     params={
                         'positionIdx': 0,
                         'timeInForce': 'IOC',
                         'orderType': 'Market',
                         'category': 'linear',
-                        'createMarketBuyOrderRequiresPrice': False  # Tell CCXT amount is in base currency
+                        'createMarketBuyOrderRequiresPrice': False
                     }
                 )
             else:
@@ -363,34 +579,29 @@ class TradingBot:
                     }
                 )
             
-            # Wait for order to process
             await asyncio.sleep(2)
-
-            logger.info(f"Order response: {order}")            
             
-            # Check if order actually has an ID (was created)
+            logger.info(f"Order response: {order}")
+            
+            # Verify order
             if order and order.get('id'):
-                # Log what we got
                 logger.info(f"Order status: {order.get('status')}, filled: {order.get('filled')}")
-    
-                # For Bybit, a market order with an ID should be filled immediately
-                # If status is None, we need to fetch the actual order status
+                
                 if order.get('status') is None:
                     await asyncio.sleep(1)
                     try:
                         actual_order = self.analyzer.exchange.fetch_order(order['id'], symbol)
                         logger.info(f"Fetched order status: {actual_order.get('status')}, filled: {actual_order.get('filled')}")
                         if actual_order.get('status') in ['closed', 'filled', 'Filled'] or actual_order.get('filled', 0) > 0:
-                            order = actual_order  # Update with actual order data
+                            order = actual_order
                         else:
                             logger.error(f"Order not filled: {actual_order}")
                             return False
                     except Exception as e:
                         logger.error(f"Error fetching order status: {e}")
-                        # Assume it worked if we can't check
-    
+            
             if order.get('status') in ['closed', 'filled', 'Filled'] or order.get('filled', 0) > 0:
-                # Set stop loss and take profit
+                # Set SL/TP
                 await self.set_sl_tp(
                     symbol,
                     signal_data['direction'],
@@ -399,15 +610,18 @@ class TradingBot:
                     signal_data['take_profit']
                 )
                 
-                logger.info(f"✓ Trade executed: {symbol} {side} - Qty: {quantity}, Value: ${final_position_value:.2f}")
+                logger.info(f"✓ Trade executed: {symbol} {side.upper()}")
+                logger.info(f"  Entry: ${current_price:.4f}, SL: ${signal_data['stop_loss']:.4f}, TP: ${signal_data['take_profit']:.4f}")
                 
                 # Update signal data
                 signal_data['order_id'] = order.get('id')
                 signal_data['executed_price'] = order.get('average', current_price)
                 signal_data['executed_quantity'] = quantity
                 signal_data['position_value'] = final_position_value
+                signal_data['leverage'] = self.leverage
+                signal_data['margin_used'] = margin_used
                 
-                # Update active positions
+                # Update tracking
                 self.active_positions[symbol] = {
                     'signal_id': signal_data['signal_id'],
                     'direction': signal_data['direction'],
@@ -416,6 +630,8 @@ class TradingBot:
                     'position_value': final_position_value
                 }
                 
+                self.performance_metrics['trades_executed'] += 1
+                
                 return True
             else:
                 logger.error(f"Order failed: {order}")
@@ -423,15 +639,16 @@ class TradingBot:
                 
         except Exception as e:
             logger.error(f"Trade execution failed: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
-    async def set_sl_tp(self, symbol: str, direction: str, quantity: float, 
-                    stop_loss: float, take_profit: float) -> bool:
+    async def set_sl_tp(self, symbol: str, direction: str, quantity: float,
+                        stop_loss: float, take_profit: float) -> bool:
         """Set stop loss and take profit orders"""
         try:
-            await asyncio.sleep(3)  # Wait for position to register
-        
-            # Use the correct v5 API endpoint with proper parameters
+            await asyncio.sleep(3)
+            
             params = {
                 'category': 'linear',
                 'symbol': symbol,
@@ -442,23 +659,22 @@ class TradingBot:
                 'tpslMode': 'Full',
                 'positionIdx': 0
             }
-        
-            # Use the correct API method
+            
             response = self.analyzer.exchange.privatePostV5PositionTradingStop(params)
-        
+            
             if response and (response.get('retCode') in [0, '0'] or response.get('ret_code') in [0, '0']):
-                logger.info(f"Response from Bybit SL/TP: {response}")
-                logger.info(f"SL/TP set successfully for {symbol} - TP: {take_profit}, SL: {stop_loss}")
+                logger.info(f"SL/TP set for {symbol} - TP: {take_profit:.6f}, SL: {stop_loss:.6f}")
                 return True
             else:
                 logger.error(f"Failed to set SL/TP for {symbol}: {response}")
                 return False
-        
+                
         except Exception as e:
             logger.error(f"Error setting SL/TP for {symbol}: {e}")
             return False
 
-    async def update_sl_tp_on_exchange(self, symbol: str, direction: str, new_sl: float, new_tp: float) -> bool:
+    async def update_sl_tp_on_exchange(self, symbol: str, direction: str,
+                                        new_sl: float, new_tp: float) -> bool:
         """Update stop loss and take profit on exchange"""
         try:
             params = {
@@ -471,15 +687,15 @@ class TradingBot:
                 'tpslMode': 'Full',
                 'positionIdx': 0
             }
-        
+            
             response = self.analyzer.exchange.privatePostV5PositionTradingStop(params)
-        
+            
             if response and (response.get('retCode') in [0, '0'] or response.get('ret_code') in [0, '0']):
                 return True
             else:
                 logger.warning(f"Failed to update SL/TP for {symbol}: {response}")
                 return False
-            
+                
         except Exception as e:
             logger.error(f"Error updating SL/TP for {symbol}: {e}")
             return False
@@ -489,7 +705,6 @@ class TradingBot:
         try:
             symbol = self.normalize_symbol(signal_data['coin'])
             
-            # Get current position
             positions = self.analyzer.exchange.fetch_positions([symbol], params={'category': 'linear'})
             position = next((p for p in positions if p['symbol'] == symbol), None)
             
@@ -497,7 +712,6 @@ class TradingBot:
                 logger.warning(f"No open position for {symbol}")
                 return False
             
-            # Close position
             side = 'sell' if position['side'] == 'long' else 'buy'
             close_order = self.analyzer.exchange.create_order(
                 symbol=symbol,
@@ -518,9 +732,8 @@ class TradingBot:
             return False
 
     def validate_signal(self, signal_data: Dict) -> bool:
-        """Validate signal before saving/executing"""
+        """Validate signal before execution with enhanced checks"""
         try:
-            # Normalize symbol
             signal_data['coin'] = self.normalize_symbol(signal_data['coin'])
             
             # Check required fields
@@ -543,27 +756,46 @@ class TradingBot:
             # Validate price relationships
             if direction == 'LONG':
                 if not (sl < entry < tp):
-                    logger.error("Invalid LONG signal prices")
+                    logger.error(f"Invalid LONG signal prices: SL={sl}, Entry={entry}, TP={tp}")
                     return False
-            else:  # SHORT
+            else:
                 if not (tp < entry < sl):
-                    logger.error("Invalid SHORT signal prices")
+                    logger.error(f"Invalid SHORT signal prices: TP={tp}, Entry={entry}, SL={sl}")
                     return False
             
-            # Check if already have position for this symbol
+            # Check existing position
             symbol = signal_data['coin']
             if symbol in self.active_positions:
                 logger.warning(f"Already have position for {symbol}")
                 return False
             
-            # Check ML confidence
+            # Check confidence threshold
             model_confidence = signal_data.get('model_confidence')
             if model_confidence is None:
                 model_confidence = signal_data.get('confidence', 0) / 100.0
-    
-            if model_confidence and model_confidence < self.min_confidence_threshold:
-                logger.warning(f"Model confidence too low: {model_confidence}")
+            
+            if model_confidence < self.min_confidence_threshold:
+                logger.info(f"Signal filtered - confidence too low: {model_confidence:.2f} < {self.min_confidence_threshold}")
+                self.performance_metrics['signals_filtered'] += 1
                 return False
+            
+            # Validate R:R ratio
+            if direction == 'LONG':
+                risk = entry - sl
+                reward = tp - entry
+            else:
+                risk = sl - entry
+                reward = entry - tp
+            
+            rr_ratio = reward / risk if risk > 0 else 0
+            
+            if rr_ratio < self.min_rr_ratio:
+                logger.info(f"Signal filtered - R:R too low: {rr_ratio:.2f} < {self.min_rr_ratio}")
+                self.performance_metrics['signals_filtered'] += 1
+                return False
+            
+            # Store R:R in signal data
+            signal_data['risk_reward_ratio'] = rr_ratio
             
             return True
             
@@ -576,12 +808,10 @@ class TradingBot:
         
         @self.app.get("/")
         async def dashboard():
-            """Serve dashboard"""
             return HTMLResponse(content=self.get_dashboard_html())
         
         @self.app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
-            """WebSocket endpoint"""
             await websocket.accept()
             self.websocket_connections.add(websocket)
             
@@ -607,11 +837,9 @@ class TradingBot:
 
         @self.app.get("/api/signals")
         async def get_signals():
-            """Get active signals"""
             try:
                 signals = self.database.get_active_signals()
                 
-                # Enhance with current prices
                 for signal in signals:
                     try:
                         symbol = self.normalize_symbol(signal['coin'])
@@ -620,22 +848,22 @@ class TradingBot:
                         if current_price > 0:
                             signal['current_price'] = current_price
                             
-                            # Calculate P&L
                             position_value = signal.get('position_value', 0)
+                            leverage = signal.get('leverage', self.leverage)
+                            
                             if position_value > 0:
                                 if signal['direction'] == 'LONG':
-                                    pnl_pct = ((current_price - signal['entry_price']) / signal['entry_price']) * 100 * self.leverage
+                                    pnl_pct = ((current_price - signal['entry_price']) / signal['entry_price']) * 100 * leverage
                                 else:
-                                    pnl_pct = ((signal['entry_price'] - current_price) / signal['entry_price']) * 100 * self.leverage
-    
-                                # Calculate P&L based on margin (position_value / leverage)
-                                margin_used = position_value / self.leverage
+                                    pnl_pct = ((signal['entry_price'] - current_price) / signal['entry_price']) * 100 * leverage
+                                
+                                margin_used = position_value / leverage
                                 pnl_usd = (pnl_pct / 100) * margin_used
                                 
                                 signal['live_pnl_usd'] = round(pnl_usd, 2)
                                 signal['live_pnl_percentage'] = round(pnl_pct, 2)
                     except Exception as e:
-                        logger.error(f"Error enhancing signal {signal['signal_id']}: {e}")
+                        logger.error(f"Error enhancing signal: {e}")
                 
                 return JSONResponse(content={"signals": signals, "count": len(signals)})
                 
@@ -645,16 +873,13 @@ class TradingBot:
 
         @self.app.get("/api/portfolio")
         async def get_portfolio():
-            """Get portfolio statistics"""
             try:
                 portfolio = self.database.get_portfolio_stats()
                 
-                # Get real balance
                 real_balance = await self.get_account_balance()
                 portfolio['real_balance'] = real_balance['total']
                 portfolio['available_balance'] = real_balance['free']
                 
-                # Calculate open P&L from exchange
                 total_open_pnl = 0
                 positions = self.analyzer.exchange.fetch_positions(params={'category': 'linear'})
                 for pos in positions:
@@ -664,6 +889,13 @@ class TradingBot:
                 
                 portfolio['open_pnl'] = round(total_open_pnl, 2)
                 portfolio['total_balance'] = real_balance['total'] + total_open_pnl
+                portfolio['daily_pnl'] = round(self.daily_pnl, 2)
+                portfolio['daily_trades'] = self.daily_trades
+                portfolio['daily_wins'] = self.daily_wins
+                portfolio['daily_losses'] = self.daily_losses
+                portfolio['trading_enabled'] = self.trading_enabled
+                portfolio['leverage'] = self.leverage
+                portfolio['position_size_pct'] = self.position_size_percent * 100
                 
                 return JSONResponse(content={"portfolio": portfolio})
                 
@@ -673,7 +905,6 @@ class TradingBot:
 
         @self.app.get("/api/system")
         async def get_system_stats():
-            """Get system statistics"""
             try:
                 cpu_percent = psutil.cpu_percent(interval=1)
                 memory = psutil.virtual_memory()
@@ -686,10 +917,19 @@ class TradingBot:
                     "scan_count": self.scan_count,
                     "last_scan": self.last_scan_time.isoformat() if self.last_scan_time else None,
                     "active_positions": len(self.active_positions),
+                    "max_positions": self.max_concurrent_positions,
                     "is_running": self.running,
                     "is_scanning": self.is_scanning,
+                    "trading_enabled": self.trading_enabled,
                     "scan_interval": self.scan_interval,
-                    "performance_metrics": self.performance_metrics
+                    "leverage": self.leverage,
+                    "position_size_percent": self.position_size_percent * 100,
+                    "min_confidence": self.min_confidence_threshold,
+                    "min_rr_ratio": self.min_rr_ratio,
+                    "performance_metrics": self.performance_metrics,
+                    "daily_pnl": self.daily_pnl,
+                    "daily_trades": self.daily_trades,
+                    "recent_win_rate": self._calculate_recent_win_rate()
                 })
                 
             except Exception as e:
@@ -698,7 +938,6 @@ class TradingBot:
 
         @self.app.get("/api/trades/history")
         async def get_trade_history():
-            """Get closed trades"""
             try:
                 with self.database.get_db_connection() as conn:
                     cursor = conn.cursor()
@@ -706,26 +945,25 @@ class TradingBot:
                         SELECT * FROM signals 
                         WHERE status = 'closed' 
                         ORDER BY closed_at DESC 
-                        LIMIT 50
+                        LIMIT 100
                     ''')
                     
                     trades = []
                     for row in cursor.fetchall():
                         trade = dict(row)
                         
-                        # Calculate P&L
                         position_value = trade.get('position_value', 0)
-                        if position_value > 0:
+                        leverage = trade.get('leverage', self.leverage)
+                        
+                        if position_value > 0 and trade.get('exit_price'):
                             if trade['direction'] == 'LONG':
-                                pnl_pct = ((trade['exit_price'] - trade['entry_price']) / trade['entry_price']) * 100 * self.leverage
+                                pnl_pct = ((trade['exit_price'] - trade['entry_price']) / trade['entry_price']) * 100 * leverage
                             else:
-                                pnl_pct = ((trade['entry_price'] - trade['exit_price']) / trade['entry_price']) * 100 * self.leverage
-
-                            # Calculate P&L based on margin (position_value / leverage)
-                            margin_used = position_value / self.leverage
-                            trade['pnl_usd'] = (pnl_pct / 100) * margin_used
-                            trade['pnl_percentage'] = pnl_pct
+                                pnl_pct = ((trade['entry_price'] - trade['exit_price']) / trade['entry_price']) * 100 * leverage
                             
+                            margin_used = position_value / leverage
+                            trade['pnl_usd'] = round((pnl_pct / 100) * margin_used, 2)
+                            trade['pnl_percentage'] = round(pnl_pct, 2)
                         else:
                             trade['pnl_usd'] = 0
                             trade['pnl_percentage'] = 0
@@ -738,11 +976,39 @@ class TradingBot:
                 logger.error(f"Error getting trade history: {e}")
                 return JSONResponse(content={"error": str(e)}, status_code=500)
 
+        @self.app.get("/api/risk")
+        async def get_risk_status():
+            """Get current risk management status"""
+            try:
+                balance = await self.get_account_balance()
+                portfolio = self.database.get_portfolio_stats()
+                
+                daily_loss_limit = self.starting_balance_today * (self.max_daily_loss_percent / 100) if self.starting_balance_today > 0 else 0
+                current_daily_loss = max(0, self.starting_balance_today - balance['total'] + self.daily_pnl) if self.starting_balance_today > 0 else 0
+                
+                return JSONResponse(content={
+                    "trading_enabled": self.trading_enabled,
+                    "daily_loss_limit": round(daily_loss_limit, 2),
+                    "current_daily_loss": round(current_daily_loss, 2),
+                    "daily_loss_remaining": round(max(0, daily_loss_limit - current_daily_loss), 2),
+                    "max_drawdown_limit": self.max_drawdown_percent,
+                    "current_drawdown": round(portfolio.get('max_drawdown', 0), 2),
+                    "positions_used": len(self.active_positions),
+                    "max_positions": self.max_concurrent_positions,
+                    "recent_win_rate": round(self._calculate_recent_win_rate() * 100, 1),
+                    "leverage": self.leverage,
+                    "position_size_pct": self.position_size_percent * 100
+                })
+                
+            except Exception as e:
+                logger.error(f"Error getting risk status: {e}")
+                return JSONResponse(content={"error": str(e)}, status_code=500)
+
         @self.app.post("/api/control/start")
         async def start_bot():
-            """Start the trading bot"""
             if not self.running:
                 self.running = True
+                self.trading_enabled = True
                 asyncio.create_task(self.main_trading_loop())
                 asyncio.create_task(self.position_monitor_loop())
                 return JSONResponse(content={"status": "started", "message": "Trading bot started"})
@@ -751,10 +1017,21 @@ class TradingBot:
 
         @self.app.post("/api/control/stop")
         async def stop_bot():
-            """Stop the trading bot"""
             self.running = False
             self.analyzer.save_models()
             return JSONResponse(content={"status": "stopped", "message": "Trading bot stopped"})
+
+        @self.app.post("/api/control/enable_trading")
+        async def enable_trading():
+            self.trading_enabled = True
+            logger.info("Trading manually enabled")
+            return JSONResponse(content={"status": "enabled", "message": "Trading enabled"})
+
+        @self.app.post("/api/control/disable_trading")
+        async def disable_trading():
+            self.trading_enabled = False
+            logger.info("Trading manually disabled")
+            return JSONResponse(content={"status": "disabled", "message": "Trading disabled"})
 
     async def broadcast_to_clients(self, message: Dict):
         """Broadcast message to WebSocket clients"""
@@ -773,29 +1050,47 @@ class TradingBot:
         self.websocket_connections -= disconnected
 
     async def main_trading_loop(self):
-        """Main trading loop - simplified"""
+        """Main trading loop with improved logging"""
         while self.running:
             try:
+                # Check for daily reset
+                self._check_daily_reset()
+                
                 self.is_scanning = True
                 scan_start = datetime.now()
                 
-                logger.info(f"Starting scan #{self.scan_count + 1}")
+                logger.info("=" * 50)
+                logger.info(f"SCAN #{self.scan_count + 1}")
+                logger.info("=" * 50)
                 
-                # Sync with exchange first
+                # Sync with exchange
                 await self.sync_positions_with_exchange()
                 
                 # Check for exits
                 await self.check_signal_exits()
                 
-                # Only generate new signals if we have room
+                # Check risk limits
+                if not await self.check_risk_limits():
+                    logger.warning("Risk limits exceeded - skipping signal generation")
+                    self.is_scanning = False
+                    await asyncio.sleep(self.scan_interval)
+                    continue
+                
+                # Generate new signals if we have capacity
                 current_positions = len(self.active_positions)
                 
-                if current_positions < self.max_concurrent_positions:
+                if current_positions < self.max_concurrent_positions and self.trading_enabled:
+                    logger.info(f"Scanning for signals (positions: {current_positions}/{self.max_concurrent_positions})")
+                    
                     # Get new signals from analyzer
                     new_signals = await self.analyzer.scan_all_coins()
                     
+                    self.performance_metrics['signals_generated'] += len(new_signals)
+                    logger.info(f"Generated {len(new_signals)} raw signals")
+                    
                     for signal_data in new_signals:
                         if len(self.active_positions) >= self.max_concurrent_positions:
+                            logger.info("Max positions reached, stopping signal processing")
                             break
                         
                         # Validate signal
@@ -804,7 +1099,6 @@ class TradingBot:
                         
                         # Execute trade
                         if await self.execute_trade(signal_data):
-                            # Save to database
                             self.database.save_signal(signal_data)
                             
                             await self.broadcast_to_clients({
@@ -812,37 +1106,51 @@ class TradingBot:
                                 "signal": signal_data
                             })
                             
-                            logger.info(f"New position opened: {signal_data['coin']}")
+                            logger.info(f"✓ New position opened: {signal_data['coin']} {signal_data['direction']}")
+                else:
+                    if not self.trading_enabled:
+                        logger.info("Trading disabled - skipping signal generation")
+                    else:
+                        logger.info(f"At max positions ({current_positions}/{self.max_concurrent_positions})")
                 
                 # Update metrics
                 self.scan_count += 1
                 self.last_scan_time = datetime.now()
                 self.is_scanning = False
+                self.performance_metrics['total_scans'] = self.scan_count
                 
                 scan_duration = (datetime.now() - scan_start).total_seconds()
+                
+                logger.info("-" * 50)
                 logger.info(f"Scan completed in {scan_duration:.1f}s")
+                logger.info(f"Positions: {len(self.active_positions)}/{self.max_concurrent_positions}")
+                logger.info(f"Daily P&L: ${self.daily_pnl:.2f} | Trades: {self.daily_trades}")
+                logger.info("-" * 50)
                 
                 await self.broadcast_to_clients({
                     "type": "scan_completed",
                     "scan_count": self.scan_count,
-                    "duration": scan_duration
+                    "duration": scan_duration,
+                    "active_positions": len(self.active_positions)
                 })
-
-                # Check if models need updating
+                
+                # Model updates
                 current_time = time.time()
                 if current_time - self.last_model_update > self.model_update_interval:
+                    logger.info("Triggering periodic model update...")
                     asyncio.create_task(self.analyzer.periodic_model_update(self.database))
                     self.last_model_update = current_time
                 
             except Exception as e:
                 self.is_scanning = False
                 logger.error(f"Error in main loop: {e}")
+                import traceback
+                traceback.print_exc()
             
-            # Wait for next scan
             await asyncio.sleep(self.scan_interval)
 
     async def position_monitor_loop(self):
-        """Monitor positions and sync with exchange"""
+        """Monitor positions frequently"""
         while self.running:
             try:
                 await asyncio.sleep(self.position_check_interval)
@@ -857,37 +1165,36 @@ class TradingBot:
         """Check if any signals should be closed"""
         try:
             active_signals = self.database.get_active_signals()
-        
+            
             for signal in active_signals:
                 try:
                     symbol = self.normalize_symbol(signal['coin'])
                     current_price = await self.analyzer.get_current_price(symbol)
-                
+                    
                     if current_price <= 0:
                         continue
-                
-                    # Update current price
+                    
                     self.database.update_signal_price(signal['signal_id'], current_price)
-                
-                    # Get market data for dynamic analysis
+                    
+                    # Get market data for analysis
                     df = await self.analyzer.get_market_data(symbol, '1h', 100)
-                
-                    # Evaluate position health and get dynamic levels
+                    
+                    exit_reason = None
+                    exit_price = None
+                    
+                    # Dynamic exit analysis
                     if not df.empty and len(df) >= 50:
                         evaluation = self.analyzer.evaluate_position_health(signal, df)
                         dynamic_levels = self.analyzer.calculate_dynamic_levels(signal, df, evaluation)
-                    
-                        # Handle dynamic adjustments
+                        
                         if dynamic_levels.get('action') == 'exit':
-                            exit_reason = f"Dynamic Exit: {dynamic_levels.get('reason', 'ML recommendation')}"
+                            exit_reason = f"Dynamic Exit: {dynamic_levels.get('reason', 'Strategy recommendation')}"
                             exit_price = current_price
                         elif dynamic_levels.get('action') == 'update':
-                            # Update SL/TP on exchange
                             new_sl = dynamic_levels.get('new_sl')
                             new_tp = dynamic_levels.get('new_tp')
                             if new_sl and new_tp:
                                 if await self.update_sl_tp_on_exchange(symbol, signal['direction'], new_sl, new_tp):
-                                    # Update database with new levels
                                     with self.database.get_db_connection() as conn:
                                         cursor = conn.cursor()
                                         cursor.execute('''
@@ -895,37 +1202,35 @@ class TradingBot:
                                             SET stop_loss = ?, take_profit = ?, updated_at = CURRENT_TIMESTAMP
                                             WHERE signal_id = ?
                                         ''', (new_sl, new_tp, signal['signal_id']))
-            
                                     logger.info(f"Updated SL/TP for {symbol}: SL={new_sl:.6f}, TP={new_tp:.6f}")
                                     continue
-                
-                    # Check standard exit conditions
-                    exit_reason = None
-                    exit_price = None
-                
-                    if signal['direction'] == 'LONG':
-                        if current_price >= signal['take_profit']:
-                            exit_reason = "Take Profit Hit"
-                            exit_price = signal['take_profit']
-                        elif current_price <= signal['stop_loss']:
-                            exit_reason = "Stop Loss Hit"
-                            exit_price = signal['stop_loss']
-                    else:  # SHORT
-                        if current_price <= signal['take_profit']:
-                            exit_reason = "Take Profit Hit"
-                            exit_price = signal['take_profit']
-                        elif current_price >= signal['stop_loss']:
-                            exit_reason = "Stop Loss Hit"
-                            exit_price = signal['stop_loss']
+                    
+                    # Standard exit conditions
+                    if not exit_reason:
+                        if signal['direction'] == 'LONG':
+                            if current_price >= signal['take_profit']:
+                                exit_reason = "Take Profit Hit"
+                                exit_price = signal['take_profit']
+                            elif current_price <= signal['stop_loss']:
+                                exit_reason = "Stop Loss Hit"
+                                exit_price = signal['stop_loss']
+                        else:
+                            if current_price <= signal['take_profit']:
+                                exit_reason = "Take Profit Hit"
+                                exit_price = signal['take_profit']
+                            elif current_price >= signal['stop_loss']:
+                                exit_reason = "Stop Loss Hit"
+                                exit_price = signal['stop_loss']
                     
                     if exit_reason and exit_price:
-                        # Close position
                         await self.close_position(signal, exit_reason)
                         
-                        # Update database
-                        self.database.close_signal(signal['signal_id'], exit_price, exit_reason)
+                        pnl = self.database.close_signal(signal['signal_id'], exit_price, exit_reason)
                         
-                        # Remove from active positions
+                        # Record trade result
+                        if pnl is not None:
+                            self._record_trade_result(pnl)
+                        
                         if symbol in self.active_positions:
                             del self.active_positions[symbol]
                         
@@ -933,10 +1238,12 @@ class TradingBot:
                             "type": "signal_closed",
                             "signal_id": signal['signal_id'],
                             "coin": symbol,
-                            "exit_reason": exit_reason
+                            "exit_reason": exit_reason,
+                            "pnl": pnl
                         })
                         
-                        logger.info(f"Signal closed: {symbol} - {exit_reason}")
+                        pnl_str = f"${pnl:.2f}" if pnl else "N/A"
+                        logger.info(f"Signal closed: {symbol} - {exit_reason} | P&L: {pnl_str}")
                         
                 except Exception as e:
                     logger.error(f"Error checking exit for {signal['signal_id']}: {e}")
@@ -945,26 +1252,43 @@ class TradingBot:
             logger.error(f"Error in signal exit check: {e}")
 
     def get_dashboard_html(self) -> str:
-        """Return dashboard HTML from templates file"""
-        with open('templates/dashboard.html', 'r', encoding='utf-8') as f:
-            return f.read()
+        """Return dashboard HTML"""
+        try:
+            with open('templates/dashboard.html', 'r', encoding='utf-8') as f:
+                return f.read()
+        except:
+            return """
+            <!DOCTYPE html>
+            <html>
+            <head><title>Trading Bot Dashboard</title></head>
+            <body>
+                <h1>Trading Bot Dashboard</h1>
+                <p>Dashboard template not found. API endpoints available at /api/*</p>
+                <ul>
+                    <li><a href="/api/signals">/api/signals</a> - Active signals</li>
+                    <li><a href="/api/portfolio">/api/portfolio</a> - Portfolio stats</li>
+                    <li><a href="/api/system">/api/system</a> - System status</li>
+                    <li><a href="/api/risk">/api/risk</a> - Risk status</li>
+                    <li><a href="/api/trades/history">/api/trades/history</a> - Trade history</li>
+                </ul>
+            </body>
+            </html>
+            """
+
 
 # Global bot instance
 bot_instance = None
 
 def get_bot():
-    """Get or create bot instance"""
     global bot_instance
     if bot_instance is None:
         bot_instance = TradingBot()
     return bot_instance
 
-# FastAPI app
 app = get_bot().app
 
 @app.on_event("startup")
 async def startup_event():
-    """Start bot on server startup"""
     bot = get_bot()
     if not bot.running:
         bot.running = True
@@ -974,19 +1298,19 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Graceful shutdown"""
     bot = get_bot()
     bot.running = False
     bot.analyzer.save_models()
     logger.info("Trading bot shutdown complete")
 
+
 if __name__ == "__main__":
     try:
-        # Ensure directories exist
         os.makedirs("data", exist_ok=True)
         os.makedirs("models", exist_ok=True)
+        os.makedirs("templates", exist_ok=True)
         
-        logger.info("Starting Simplified Trading Bot Server...")
+        logger.info("Starting Production Trading Bot Server...")
         
         uvicorn.run(
             "app:app",
